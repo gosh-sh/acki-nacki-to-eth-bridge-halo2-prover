@@ -107,7 +107,100 @@ impl GqlClient {
             .context("failed to base64-decode BOC")
     }
 
-    /// Fetch bkSetUpdates with their attestations.
+    /// Fetch bkSetUpdates (light — no attestation subfields).
+    /// `first_or_last`: true = first N (oldest), false = last N (newest).
+    pub async fn query_bk_set_updates_light(
+        &self,
+        count: u32,
+        first: bool,
+    ) -> anyhow::Result<Vec<BkSetUpdateWithAttestations>> {
+        let pagination = if first {
+            format!("first: {count}")
+        } else {
+            format!("last: {count}")
+        };
+        let q = format!(
+            r#"{{
+              blockchain {{
+                bkSetUpdates({pagination}) {{
+                  edges {{
+                    node {{
+                      block_id
+                      bk_set_update
+                      height
+                    }}
+                  }}
+                }}
+              }}
+            }}"#
+        );
+        let data = self.query(&q).await?;
+        let edges = data
+            .pointer("/blockchain/bkSetUpdates/edges")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut updates = Vec::new();
+        for edge in &edges {
+            if let Some(node) = edge.get("node") {
+                let block_id = node.get("block_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let bk_set_update_hex = node.get("bk_set_update").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let height = node.get("height").and_then(|v| v.as_u64());
+                updates.push(BkSetUpdateWithAttestations {
+                    block_id,
+                    bk_set_update_hex,
+                    height,
+                    attestations: Vec::new(), // no attestations in light query
+                });
+            }
+        }
+        Ok(updates)
+    }
+
+    /// Fetch the last N bkSetUpdates (most recent).
+    pub async fn query_bk_set_updates_last(
+        &self,
+        last: u32,
+    ) -> anyhow::Result<Vec<BkSetUpdateWithAttestations>> {
+        let q = format!(
+            r#"{{
+              blockchain {{
+                bkSetUpdates(last: {last}) {{
+                  edges {{
+                    node {{
+                      block_id
+                      bk_set_update
+                      height
+                      attestations {{
+                        block_id
+                        parent_block_id
+                        target_type
+                        envelope_hash
+                        aggregated_signature
+                        signature_occurrences
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}"#
+        );
+        let data = self.query(&q).await?;
+        let edges = data
+            .pointer("/blockchain/bkSetUpdates/edges")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut updates = Vec::new();
+        for edge in &edges {
+            if let Some(node) = edge.get("node") {
+                updates.push(BkSetUpdateWithAttestations::from_json(node)?);
+            }
+        }
+        Ok(updates)
+    }
+
+    /// Fetch the first N bkSetUpdates (oldest first).
     pub async fn query_bk_set_updates(
         &self,
         first: u32,

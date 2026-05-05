@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, Context};
+use anyhow::bail;
 
 /// A parsed attestation envelope extracted from a block BOC.
 #[derive(Debug, Clone)]
