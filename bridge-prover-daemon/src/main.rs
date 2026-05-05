@@ -78,7 +78,6 @@ async fn main() -> anyhow::Result<()> {
     let blocks = gql.query_latest_blocks(20).await?;
     let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
     // Start a few blocks behind the latest so attestations are available.
-    // Stay close to latest to avoid BK set rotation mismatches.
     let start_seq = if latest_seq > 3 { (latest_seq - 3) as u32 } else { 1 };
     let mut last_seen_seqno: u32 = start_seq.saturating_sub(1);
     info!(
