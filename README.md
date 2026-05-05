@@ -92,42 +92,13 @@ make run
 
 **Important:** BLS keys are generated randomly each time you run `make generate_zerostate`. The `bk_set.json` included in this repo matches one specific local node build and will **not** match yours. You **must** update `./bk_set.json` with your node's actual BLS pubkeys before running the prover.
 
-**How to extract your node's BLS pubkeys:**
-
-The keys are stored inside each node container at `/workdir/config/block_keeper{N}_bls.keys.json`. Extract all 5 pubkeys with:
-
-```bash
-for i in 0 1 2 3 4; do
-  PK=$(docker exec local_gossip_nodes-node0-1 \
-    cat /workdir/config/block_keeper${i}_bls.keys.json \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['public'])")
-  echo "  \"$i\": \"$PK\""
-done
-```
-
-Or extract automatically into `bk_set.json`:
-
-```bash
-echo "{" > bk_set.json
-for i in 0 1 2 3 4; do
-  PK=$(docker exec local_gossip_nodes-node0-1 \
-    cat /workdir/config/block_keeper${i}_bls.keys.json \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['public'])")
-  COMMA=$( [ "$i" -lt 4 ] && echo "," || echo "" )
-  echo "  \"$i\": \"$PK\"$COMMA" >> bk_set.json
-done
-echo "}" >> bk_set.json
-echo "Updated bk_set.json:"
-cat bk_set.json
-```
-
-You can also extract them from node logs:
+Extract your node's BLS pubkeys from the node logs:
 
 ```bash
 docker logs local_gossip_nodes-node0-1 2>&1 | grep "Hot reload initial bk_set" | head -1
 ```
 
-**The file to update:** `./bk_set.json` (in the project root, next to `Cargo.toml`).
+This prints the full BK set as JSON. Copy the signer indices and pubkeys into `./bk_set.json` (in the project root, next to `Cargo.toml`).
 
 **Format:**
 ```json
@@ -142,39 +113,11 @@ docker logs local_gossip_nodes-node0-1 2>&1 | grep "Hot reload initial bk_set" |
 
 Keys are `signer_index` (string) → `bls_pubkey_hex` (48 bytes compressed or 96 bytes uncompressed). Both formats are accepted.
 
-### 3. Build and run the 10-block test
-
-```bash
-cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
-
-# Build all crates
-cargo build
-
-# Run the 10-block integration test (takes ~20 min first run, ~17 min cached)
-cargo test -p bridge-prover-lib --test live_10_blocks_test -- --nocapture
-
-# First run: generates SRS + VK + PK (~130s), then 10 proofs (~100s each)
-# Subsequent runs: loads cached keys (~3s), then 10 proofs
-```
-
 ---
 
 ## Quick Start (Shellnet)
 
-### 1. Extract BK set from shellnet
-
-The BK set can be automatically extracted from shellnet's GraphQL bkSetUpdates:
-
-```bash
-# Test extraction
-cargo test -p bridge-prover-lib --test shellnet_bk_set_test -- --nocapture
-```
-
-Or generate `bk_set.json` programmatically (not yet a CLI command — use the test or write a small script).
-
-**Note:** Shellnet uses **96-byte uncompressed** BLS pubkeys (vs 48-byte compressed on local node). The prover handles both formats.
-
-### 2. Configure and run
+For shellnet (or any remote network), the prover daemon **automatically extracts the BK set** via GraphQL `bkSetUpdates` — no manual `bk_set.json` needed. If the GraphQL extraction fails, the daemon falls back to `./bk_set.json`.
 
 Edit the constants in `bridge-prover-daemon/src/main.rs`:
 
@@ -182,7 +125,7 @@ Edit the constants in `bridge-prover-daemon/src/main.rs`:
 const GQL_ENDPOINT: &str = "https://shellnet.ackinacki.org/graphql";
 ```
 
-Then build and run the prover daemon.
+Then build and run the prover daemon. It will query the BK set history, reconstruct the current active set, and proceed to proof generation.
 
 ---
 
