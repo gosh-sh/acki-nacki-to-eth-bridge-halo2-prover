@@ -145,6 +145,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "attestation-bls-checker-circuit",
+ "base64",
  "bincode",
  "bridge-parsers",
  "bridge-test-data-gen",

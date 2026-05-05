@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
     while stats.blocks_processed < MAX_BLOCKS_TO_PROCESS {
         let target_seqno = last_seen_seqno + 1;
 
-        match attestation_fetcher::fetch_attestation_near_seqno(&gql, target_seqno).await {
+        match attestation_fetcher::fetch_attestation_for_block(&gql, target_seqno).await {
             Ok(att) => {
                 if att.target_type == 0 {
                     stats.primary_attestations += 1;
@@ -102,34 +102,25 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
 
-                info!("block {}: primary attestation found", target_seqno);
+                info!("block {}: primary attestation found, {} signers",
+                    target_seqno, att.signature_occurrences.len());
 
-                // Reconstruct attestation bytes.
-                // TODO: implement proper reconstruction from GQL fields.
-                // For now, this is a placeholder that will need the actual
-                // binary reconstruction logic.
-                let att_bytes = match reconstruct_attestation_bytes(&att) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        error!("block {}: failed to reconstruct attestation bytes: {}", target_seqno, e);
-                        stats.skipped_blocks += 1;
-                        last_seen_seqno = target_seqno;
-                        continue;
-                    }
-                };
+                // The raw_bytes from BOC parsing are already in the correct
+                // bincode Envelope<AttestationData> format.
+                let att_bytes = &att.raw_bytes;
 
                 // Generate proof.
                 let t = Instant::now();
                 let proof_output = match prover::generate_primary_proof(
                     &key_manager,
-                    &att_bytes,
+                    att_bytes,
                     &bk_set,
                     last_seen_seqno,
                 ) {
                     Ok(output) => output,
                     Err(e) => {
                         error!("block {}: proof generation failed: {}", target_seqno, e);
-                        log_witnesses(target_seqno, &att_bytes, &bk_set, last_seen_seqno);
+                        log_witnesses(target_seqno, att_bytes, &bk_set, last_seen_seqno);
                         stats.verification_failed += 1;
                         stats.blocks_processed += 1;
                         last_seen_seqno = target_seqno;
@@ -212,21 +203,6 @@ async fn load_bk_set(gql: &gql_client::GqlClient) -> anyhow::Result<HashMap<u16,
     // Fallback to config file.
     attestation_fetcher::load_bk_set_from_config(BK_SET_CONFIG)
         .context("failed to load BK set from both GraphQL and config file")
-}
-
-fn reconstruct_attestation_bytes(
-    att: &gql_client::GqlAttestation,
-) -> anyhow::Result<Vec<u8>> {
-    // TODO: Implement proper attestation byte reconstruction.
-    // This requires building the exact bincode format expected by bridge-parsers.
-    // For now, return an error indicating this needs implementation.
-    anyhow::bail!(
-        "attestation byte reconstruction not yet implemented \
-         (block_id={}, sig_len={}, signers={})",
-        att.block_id,
-        att.aggregated_signature.len() / 2,
-        att.signature_occurrences.len(),
-    )
 }
 
 fn log_witnesses(

@@ -18,6 +18,7 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 bincode = { workspace = true }
+base64 = { workspace = true }
 hex = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

@@ -63,6 +63,22 @@ impl GqlClient {
         Ok(blocks)
     }
 
+    /// Fetch a block's raw BOC (base64) by hash.
+    pub async fn query_block_boc(&self, hash: &str) -> anyhow::Result<Vec<u8>> {
+        let q = format!(
+            r#"{{ blockchain {{ block(hash: "{hash}") {{ boc }} }} }}"#
+        );
+        let data = self.query(&q).await?;
+        let boc_str = data
+            .pointer("/blockchain/block/boc")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::format_err!("block {} not found or no boc", hash))?;
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(boc_str)
+            .context("failed to base64-decode BOC")
+    }
+
     /// Fetch bkSetUpdates with their attestations.
     pub async fn query_bk_set_updates(
         &self,
