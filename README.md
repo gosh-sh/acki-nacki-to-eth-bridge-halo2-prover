@@ -47,7 +47,7 @@ Off-chain prover and verifier daemons that generate and verify halo2 KZG proofs 
 
 Shared:
   params/          ← SRS, VK, PK (cached, ~3.5 GB total)
-  bk_set.json      ← BK set pubkeys (generated or manual)
+  (BK set extracted automatically from GraphQL at startup)
   proofs/          ← proof + result JSON files (IPC)
   logs/            ← witness dumps on failure
 ```
@@ -87,44 +87,21 @@ make run
 #   -d '{"query":"{ blockchain { blocks(last: 1) { edges { node { seq_no } } } } }"}'
 ```
 
-### 2. Initialize BK set
+### 2. BK set
 
-**Important:** BLS keys are generated randomly each time you run `make generate_zerostate`. The `bk_set.json` included in this repo matches one specific local node build and will **not** match yours. You **must** update `./bk_set.json` with your node's actual BLS pubkeys before running the prover.
-
-Extract your node's BLS pubkeys from the node logs:
-
-```bash
-docker logs local_gossip_nodes-node0-1 2>&1 | grep "Hot reload initial bk_set" | head -1
-```
-
-This prints the full BK set as JSON. Copy the signer indices and pubkeys into `./bk_set.json` (in the project root, next to `Cargo.toml`).
-
-**Format:**
-```json
-{
-  "0": "8380856144f83edc...hex-encoded-bls-pubkey...",
-  "1": "871b12c91e4a0917...",
-  "2": "a17820823c7ae92a...",
-  "3": "94b3dd712b886...",
-  "4": "ad2347252db55192..."
-}
-```
-
-Keys are `signer_index` (string) → `bls_pubkey_hex` (48 bytes compressed or 96 bytes uncompressed). Both formats are accepted.
+No manual setup required. The prover daemon **automatically extracts the BK set** via GraphQL `bkSetUpdates` at startup. It queries the full history of BK set changes (adds/removes) and reconstructs the current active validator set.
 
 ---
 
 ## Quick Start (Shellnet)
 
-For shellnet (or any remote network), the prover daemon **automatically extracts the BK set** via GraphQL `bkSetUpdates` — no manual `bk_set.json` needed. If the GraphQL extraction fails, the daemon falls back to `./bk_set.json`.
-
-Edit the constants in `bridge-prover-daemon/src/main.rs`:
+Set the endpoint in `bridge-prover-daemon/src/main.rs`:
 
 ```rust
 const GQL_ENDPOINT: &str = "https://shellnet.ackinacki.org/graphql";
 ```
 
-Then build and run the prover daemon. It will query the BK set history, reconstruct the current active set, and proceed to proof generation.
+Then build and run the prover daemon. BK set is extracted automatically from the network.
 
 ---
 
@@ -143,7 +120,7 @@ All configuration is currently via constants in the source code. Key settings:
 | `VERIFIER_TIMEOUT` | 60s | Max wait for verifier result file |
 | `GQL_ENDPOINT` | `http://localhost/graphql` | Node GraphQL endpoint |
 | `PARAMS_DIR` | `./params` | Directory for SRS, VK, PK cache |
-| `BK_SET_CONFIG` | `./bk_set.json` | BK set pubkeys file |
+| `BK_SET_CONFIG` | `./bk_set.json` | BK set fallback file (optional, GraphQL is primary) |
 
 ### Verifier Daemon (`bridge-verifier-daemon/src/main.rs`)
 
@@ -179,7 +156,7 @@ RUST_LOG=debug cargo run --release --bin bridge-prover
 ### What happens on first run:
 
 1. Connects to GraphQL endpoint
-2. Loads BK set (GraphQL → fallback to `bk_set.json`)
+2. Loads BK set from GraphQL `bkSetUpdates`
 3. Computes Poseidon commitment
 4. Generates SRS (`params/kzg_bn254_20.srs`, ~128 MB, ~1s)
 5. **Keygen** (`params/primary_vk.bin` + `params/primary_pk.bin`, ~130s) ← only first time
@@ -209,7 +186,7 @@ RUST_LOG=debug cargo run --release --bin bridge-verifier
 
 ### Prerequisites:
 
-- `bk_set.json` must exist (verifier computes its own Poseidon commitment)
+- Verifier extracts BK set from GraphQL (same as prover) to compute Poseidon commitment
 - `params/primary_vk.bin` + `params/primary_config_params.json` must exist (run prover first to generate)
 - The verifier does **NOT** need `primary_pk.bin` (saves ~3.5 GB for verifier-only deployments)
 
@@ -350,7 +327,7 @@ If a block fails verification:
 1. Check `proofs/result_{seq_no}.json` for the error message
 2. Check `logs/block_{seq_no}_witnesses.json` for the private witnesses
 3. Common issues:
-   - **BK set mismatch**: prover and verifier using different `bk_set.json`
+   - **BK set mismatch**: prover and verifier extracted different BK sets (race with rotation)
    - **Attestation format**: block BOC structure changed between node versions
    - **Threshold not met**: block has fewer signers than `ceil(2*n/3)`
 
@@ -385,7 +362,6 @@ cargo test -p bridge-prover-lib -- test_parse_known_attestation --nocapture
 acki-nacki-to-eth-bridge-halo2-prover/
 ├── Cargo.toml                          # Workspace definition
 ├── README.md                           # This file
-├── bk_set.json                         # BK set pubkeys (local node default)
 ├── bridge-prover-lib/                  # Core library
 │   ├── src/
 │   │   ├── lib.rs                      # Re-exports
@@ -423,9 +399,9 @@ acki-nacki-to-eth-bridge-halo2-prover/
 
 ## Troubleshooting
 
-### "bk_set.json not found"
+### "BK set is empty after processing bkSetUpdates"
 
-The prover/verifier needs the BK set file. For local node, it's included. For shellnet, generate it by running the `shellnet_bk_set_test` and saving the output, or create it manually.
+The GraphQL `bkSetUpdates` query returned changes but the net result is zero active signers. This can happen if the initial BK set was established at genesis and isn't captured in bkSetUpdates. Provide a `bk_set.json` fallback file as a workaround.
 
 ### "primary VK not found"
 
