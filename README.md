@@ -81,8 +81,7 @@ The prover and verifier communicate via **file-based IPC**: the prover writes `p
 
 ```bash
 cd /path/to/acki-nacki
-git checkout poseidon_profile_new
-git checkout -b latest_an_to_eth_bridge_test
+git checkout latest_an_to_eth_bridge_test
 make run
 # Wait ~2 min for docker build + node startup
 # Verify: curl http://localhost/graphql -H "Content-Type: application/json" \
