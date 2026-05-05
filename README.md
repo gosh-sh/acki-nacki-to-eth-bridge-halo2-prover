@@ -9,7 +9,6 @@ Off-chain prover and verifier daemons that generate and verify halo2 KZG proofs 
 - [Quick Start (Local Node)](#quick-start-local-node)
 - [Quick Start (Shellnet)](#quick-start-shellnet)
 - [Configuration](#configuration)
-- [BK Set Initialization](#bk-set-initialization)
 - [Running the Prover](#running-the-prover)
 - [Running the Verifier](#running-the-verifier)
 - [Running Both Daemons Together](#running-both-daemons-together)
@@ -164,46 +163,6 @@ All configuration is currently via constants in the source code. Key settings:
 | `NUM_LIMBS` | 5 | CRT limbs per field element |
 | `MAX_SIGNERS` | 300 | Max BK set size (single-VK support) |
 
----
-
-## BK Set Initialization
-
-The Block Keeper (BK) set contains the BLS public keys of all active validators. The prover needs this to:
-1. Compute the Poseidon commitment (public instance)
-2. Build the BLS verification circuit
-
-### Option A: Manual config file
-
-Create `bk_set.json` with signer indices and hex-encoded BLS pubkeys:
-
-```json
-{
-  "0": "8380856144f83edc14392675819248f7da38a53335b44348e6ad390365c3f2566f3206a5d0aab97135f37dba9cb6e491",
-  "1": "871b12c91e4a091707d7d503cad6386a8ca564a50e4595f2d5e0f79e604df77c428246dfed9a8c7f8947653597533b25"
-}
-```
-
-**For local node:** Extract from docker logs (see Quick Start above). The included `bk_set.json` works for the standard 5-node setup.
-
-**For shellnet:** Run the BK set extraction test, then manually save the output to `bk_set.json`.
-
-### Option B: Automatic extraction from GraphQL
-
-The prover daemon attempts to fetch the BK set from GraphQL `bkSetUpdates` first. It queries the history of BK set changes (adds/removes) and reconstructs the current active set.
-
-This works for **shellnet** (where BK set changes are recorded as bkSetUpdates). It may **not work for local nodes** where the BK set is fixed from genesis and no bkSetUpdates exist.
-
-**Fallback:** If GraphQL extraction fails, the prover falls back to `bk_set.json`.
-
-### Pubkey formats
-
-| Source | Format | Size |
-|--------|--------|------|
-| Local node (docker logs) | Compressed BLS G1 | 48 bytes |
-| Shellnet (bkSetUpdates) | Uncompressed BLS G1 | 96 bytes |
-| `bk_set.json` | Either format | 48 or 96 bytes |
-
-The circuit's `deserialize_g1_pubkey` handles both formats automatically.
 
 ---
 
