@@ -90,18 +90,49 @@ make run
 
 ### 2. Initialize BK set
 
-For a local node (5 fixed validators), extract BLS pubkeys from node logs:
+**Important:** BLS keys are generated randomly each time you run `make generate_zerostate`. The `bk_set.json` included in this repo matches one specific local node build and will **not** match yours. You **must** update `./bk_set.json` with your node's actual BLS pubkeys before running the prover.
+
+**How to extract your node's BLS pubkeys:**
+
+The keys are stored inside each node container at `/workdir/config/block_keeper{N}_bls.keys.json`. Extract all 5 pubkeys with:
 
 ```bash
-docker logs local_gossip_nodes-node0-1 2>&1 | grep "bk_set" | head -5
+for i in 0 1 2 3 4; do
+  PK=$(docker exec local_gossip_nodes-node0-1 \
+    cat /workdir/config/block_keeper${i}_bls.keys.json \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['public'])")
+  echo "  \"$i\": \"$PK\""
+done
 ```
 
-The `bk_set.json` for the standard 5-node local setup is already included in this repo. If your node has different keys, update it manually.
+Or extract automatically into `bk_set.json`:
 
-**Format** (`bk_set.json`):
+```bash
+echo "{" > bk_set.json
+for i in 0 1 2 3 4; do
+  PK=$(docker exec local_gossip_nodes-node0-1 \
+    cat /workdir/config/block_keeper${i}_bls.keys.json \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['public'])")
+  COMMA=$( [ "$i" -lt 4 ] && echo "," || echo "" )
+  echo "  \"$i\": \"$PK\"$COMMA" >> bk_set.json
+done
+echo "}" >> bk_set.json
+echo "Updated bk_set.json:"
+cat bk_set.json
+```
+
+You can also extract them from node logs:
+
+```bash
+docker logs local_gossip_nodes-node0-1 2>&1 | grep "Hot reload initial bk_set" | head -1
+```
+
+**The file to update:** `./bk_set.json` (in the project root, next to `Cargo.toml`).
+
+**Format:**
 ```json
 {
-  "0": "8380856144f83edc...48-or-96-byte-hex-compressed-pubkey...",
+  "0": "8380856144f83edc...hex-encoded-bls-pubkey...",
   "1": "871b12c91e4a0917...",
   "2": "a17820823c7ae92a...",
   "3": "94b3dd712b886...",
@@ -109,7 +140,7 @@ The `bk_set.json` for the standard 5-node local setup is already included in thi
 }
 ```
 
-Keys are `signer_index` (string) → `compressed_bls_pubkey_hex` (48 bytes for compressed, 96 for uncompressed).
+Keys are `signer_index` (string) → `bls_pubkey_hex` (48 bytes compressed or 96 bytes uncompressed). Both formats are accepted.
 
 ### 3. Build and run the 10-block test
 
