@@ -170,10 +170,10 @@ All configuration is currently via constants in the source code. Key settings:
 
 ```bash
 # From the project root:
-cargo run --bin bridge-prover
+cargo run --release --bin bridge-prover
 
 # With debug logging:
-RUST_LOG=debug cargo run --bin bridge-prover
+RUST_LOG=debug cargo run --release --bin bridge-prover
 ```
 
 ### What happens on first run:
@@ -201,10 +201,10 @@ Steps 1-4 same, step 5 loads from cache (~3s), then main loop.
 
 ```bash
 # From the project root (same directory as prover):
-cargo run --bin bridge-verifier
+cargo run --release --bin bridge-verifier
 
 # With debug logging:
-RUST_LOG=debug cargo run --bin bridge-verifier
+RUST_LOG=debug cargo run --release --bin bridge-verifier
 ```
 
 ### Prerequisites:
@@ -233,10 +233,10 @@ Open two terminals in the project root:
 
 ```bash
 # Terminal 1: Start verifier first (it waits for proofs)
-RUST_LOG=info cargo run --bin bridge-verifier
+RUST_LOG=info cargo run --release --bin bridge-verifier
 
 # Terminal 2: Start prover
-RUST_LOG=info cargo run --bin bridge-prover
+RUST_LOG=info cargo run --release --bin bridge-prover
 ```
 
 The prover generates proofs and writes them to `proofs/`. The verifier picks them up, verifies, and writes results. The prover waits for each result before proceeding.
