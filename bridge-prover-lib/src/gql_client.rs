@@ -63,6 +63,34 @@ impl GqlClient {
         Ok(blocks)
     }
 
+    /// Fetch the hash and BOC of a block by seq_no.
+    ///
+    /// Uses cursor-based pagination: queries blocks from the end, walking backwards
+    /// until we find the target seq_no. Returns (hash, boc_bytes).
+    pub async fn query_block_boc_by_seq_no(&self, seq_no: u64) -> anyhow::Result<(String, Vec<u8>)> {
+        // Strategy: query a window of recent blocks and find the one with matching seq_no.
+        // If not found, try larger windows or use the blockByHeight endpoint.
+        let tid = "00000000000000000000000000000000000000000000000000000000000000000000";
+        let q = format!(
+            r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seq_no}) {{ hash boc }} }} }}"#
+        );
+        let data = self.query(&q).await?;
+        let block = data
+            .pointer("/blockchain/blockByHeight")
+            .ok_or_else(|| anyhow::format_err!("blockByHeight returned null for seq_no={}", seq_no))?;
+        if block.is_null() {
+            anyhow::bail!("block at seq_no={} not found", seq_no);
+        }
+        let hash = block.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let boc_str = block.get("boc").and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::format_err!("no boc for block at seq_no={}", seq_no))?;
+        use base64::Engine;
+        let boc_bytes = base64::engine::general_purpose::STANDARD
+            .decode(boc_str)
+            .context("failed to base64-decode BOC")?;
+        Ok((hash, boc_bytes))
+    }
+
     /// Fetch a block's raw BOC (base64) by hash.
     pub async fn query_block_boc(&self, hash: &str) -> anyhow::Result<Vec<u8>> {
         let q = format!(

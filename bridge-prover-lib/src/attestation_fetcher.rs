@@ -94,79 +94,52 @@ pub fn load_bk_set_from_config(path: &str) -> anyhow::Result<HashMap<u16, Vec<u8
 
 /// Fetch the attestation for block N by parsing block N+1's BOC.
 ///
-/// Strategy:
-/// 1. Query recent blocks to find the hash of block at `target_seq_no + 1`
-/// 2. Fetch that block's BOC
-/// 3. Parse the BOC to extract attestation envelopes from the common section
-/// 4. Find the attestation for `target_seq_no`
+/// The attestation for block N is in the common section of block N+1 (or sometimes N+2).
+/// Uses the `blockByHeight` GraphQL query for direct access by seq_no.
 pub async fn fetch_attestation_for_block(
     client: &GqlClient,
     target_seq_no: u32,
 ) -> anyhow::Result<crate::boc_parser::ParsedAttestation> {
-    // Find the block at target_seq_no + 1 (or later) that should contain the attestation.
-    let blocks = client.query_latest_blocks(200).await?;
+    // Try blocks N+1, N+2, N+3 (attestation is usually in N+1).
+    for delta in 1..=3u32 {
+        let source_seq = target_seq_no as u64 + delta as u64;
+        let (source_hash, boc) = match client.query_block_boc_by_seq_no(source_seq).await {
+            Ok(r) => r,
+            Err(e) => {
+                info!("block seq={} not available: {}", source_seq, e);
+                continue;
+            }
+        };
 
-    // Find the hash of a block with seq_no > target_seq_no (ideally target_seq_no + 1).
-    let source_block = blocks
-        .iter()
-        .filter(|(_, seq)| *seq > target_seq_no as u64)
-        .min_by_key(|(_, seq)| *seq);
+        info!(
+            "fetching BOC of block seq={} (hash={}...) to find attestation for seq={}",
+            source_seq, &source_hash[..12.min(source_hash.len())], target_seq_no
+        );
 
-    let (source_hash, source_seq) = match source_block {
-        Some((h, s)) => (h.clone(), *s),
-        None => bail!(
-            "no block with seq_no > {} found in latest 200 blocks (max_seq={})",
-            target_seq_no,
-            blocks.iter().map(|(_, s)| s).max().unwrap_or(&0)
-        ),
-    };
+        let attestations = crate::boc_parser::extract_attestations_from_boc(&boc)?;
+        info!(
+            "found {} attestations in block seq={}",
+            attestations.len(),
+            source_seq
+        );
 
-    info!(
-        "fetching BOC of block seq={} (hash={}) to find attestation for seq={}",
-        source_seq, &source_hash[..12], target_seq_no
-    );
-
-    // Fetch the BOC.
-    let boc = client.query_block_boc(&source_hash).await?;
-    info!("BOC size: {} bytes", boc.len());
-
-    // Parse attestations from the BOC.
-    let attestations = crate::boc_parser::extract_attestations_from_boc(&boc)?;
-    info!(
-        "found {} attestations in block seq={}",
-        attestations.len(),
-        source_seq
-    );
-
-    // Find the attestation for our target block.
-    for att in &attestations {
-        if att.block_seq_no == target_seq_no {
-            info!(
-                "attestation for seq={}: type={}, signers={:?}",
-                target_seq_no,
-                if att.target_type == 0 { "Primary" } else { "Fallback" },
-                att.signature_occurrences
-            );
-            return Ok(att.clone());
-        }
-    }
-
-    // If not in the nearest block, try a few more.
-    for (hash, seq) in &blocks {
-        if *seq <= target_seq_no as u64 || *seq == source_seq {
-            continue;
-        }
-        let boc = client.query_block_boc(hash).await?;
-        let atts = crate::boc_parser::extract_attestations_from_boc(&boc)?;
-        for att in &atts {
+        for att in &attestations {
             if att.block_seq_no == target_seq_no {
+                info!(
+                    "attestation for seq={}: type={}, signers={:?}",
+                    target_seq_no,
+                    if att.target_type == 0 { "Primary" } else { "Fallback" },
+                    att.signature_occurrences
+                );
                 return Ok(att.clone());
             }
         }
     }
 
     bail!(
-        "attestation for block seq_no={} not found in any scanned block",
-        target_seq_no
+        "attestation for block seq_no={} not found in blocks {}..{}",
+        target_seq_no,
+        target_seq_no + 1,
+        target_seq_no + 3,
     )
 }
