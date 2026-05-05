@@ -35,9 +35,7 @@ async fn main() -> anyhow::Result<()> {
     info!("=== Bridge Verifier Daemon ===");
 
     // 1. Load BK set commitment.
-    // The verifier needs to know the expected BK set commitment to reconstruct instances.
-    // For local testing, load from config or compute from the same source as the prover.
-    let bk_set_commitment = load_bk_set_commitment()?;
+    let bk_set_commitment = load_bk_set_commitment().await?;
     info!("BK set commitment: {:?}", bk_set_commitment);
 
     // 2. Load key manager (SRS + VK only, no PK needed).
@@ -53,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 3. Watch for proof files and verify.
     let mut last_seen_seqno: u32 = 0;
+    let mut bootstrapped = false;
     let mut stats = Stats::default();
     let mut last_activity = Instant::now();
     let t_total = Instant::now();
@@ -60,6 +59,19 @@ async fn main() -> anyhow::Result<()> {
     info!("watching proofs/ directory for incoming proofs...");
 
     loop {
+        // If not yet bootstrapped, scan for any proof file to find the starting seq_no.
+        if !bootstrapped {
+            if let Some(first_seqno) = scan_for_first_proof() {
+                info!("bootstrapping: found first proof at seq_no={}", first_seqno);
+                let request = ipc::read_proof_request(first_seqno).ok();
+                if let Some(req) = request {
+                    last_seen_seqno = req.last_seen_block_seqno;
+                    info!("setting initial last_seen={} from first proof", last_seen_seqno);
+                }
+                bootstrapped = true;
+            }
+        }
+
         let next_seqno = last_seen_seqno + 1;
         let proof_path = ipc::proof_file_path(next_seqno);
 
@@ -210,23 +222,48 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn load_bk_set_commitment() -> anyhow::Result<Fr> {
-    // Load BK set from config and compute Poseidon commitment.
-    let bk_set_config = "./bk_set.json";
-    if Path::new(bk_set_config).exists() {
-        let bk_set = bridge_prover_lib::attestation_fetcher::load_bk_set_from_config(bk_set_config)?;
-        Ok(poseidon::compute_bk_set_poseidon(
-            &bk_set,
-            bridge_prover_lib::keys::circuit_limb_bits(),
-            bridge_prover_lib::keys::circuit_num_limbs(),
-        ))
-    } else {
-        anyhow::bail!(
-            "BK set config not found at {}. \
-             Run the prover first or provide the BK set config.",
-            bk_set_config
-        )
-    }
+const GQL_ENDPOINT: &str = "https://shellnet.ackinacki.org/graphql";
+const BK_SET_CONFIG: &str = "./bk_set.json";
+
+async fn load_bk_set_commitment() -> anyhow::Result<Fr> {
+    // Try GraphQL first, then config file.
+    let bk_set = match bridge_prover_lib::gql_client::create_client(GQL_ENDPOINT) {
+        Ok(gql) => match bridge_prover_lib::attestation_fetcher::fetch_initial_bk_set(&gql).await {
+            Ok(bk) => {
+                info!("BK set loaded from GraphQL: {} signers", bk.len());
+                bk
+            }
+            Err(e) => {
+                info!("GraphQL BK set failed ({}), trying config file", e);
+                bridge_prover_lib::attestation_fetcher::load_bk_set_from_config(BK_SET_CONFIG)?
+            }
+        },
+        Err(_) => bridge_prover_lib::attestation_fetcher::load_bk_set_from_config(BK_SET_CONFIG)?,
+    };
+    Ok(poseidon::compute_bk_set_poseidon(
+        &bk_set,
+        bridge_prover_lib::keys::circuit_limb_bits(),
+        bridge_prover_lib::keys::circuit_num_limbs(),
+    ))
+}
+
+/// Scan the proofs/ directory for the first proof file and return its seq_no.
+fn scan_for_first_proof() -> Option<u32> {
+    let dir = std::fs::read_dir("proofs").ok()?;
+    let mut proof_seqnos: Vec<u32> = dir
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with("proof_") && name.ends_with(".json") {
+                let num_str = name.trim_start_matches("proof_").trim_end_matches(".json");
+                num_str.parse::<u32>().ok()
+            } else {
+                None
+            }
+        })
+        .collect();
+    proof_seqnos.sort();
+    proof_seqnos.first().copied()
 }
 
 fn write_failure(seq_no: u32, error: &str) {

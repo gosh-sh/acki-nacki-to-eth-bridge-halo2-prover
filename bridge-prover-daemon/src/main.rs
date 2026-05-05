@@ -12,12 +12,12 @@ use bridge_prover_lib::keys::KeyManager;
 use bridge_prover_lib::poseidon;
 use bridge_prover_lib::prover;
 
-const MAX_BLOCKS_TO_PROCESS: u32 = 100;
-const SLEEP_BETWEEN_BLOCKS: Duration = Duration::from_secs(10);
+const MAX_BLOCKS_TO_PROCESS: u32 = 10;
+const SLEEP_BETWEEN_BLOCKS: Duration = Duration::from_secs(5);
 const SLEEP_ON_RETRY: Duration = Duration::from_secs(5);
-const INITIAL_WAIT: Duration = Duration::from_secs(30);
-const VERIFIER_TIMEOUT: Duration = Duration::from_secs(60);
-const GQL_ENDPOINT: &str = "http://localhost/graphql";
+const INITIAL_WAIT: Duration = Duration::from_secs(5);
+const VERIFIER_TIMEOUT: Duration = Duration::from_secs(120);
+const GQL_ENDPOINT: &str = "https://shellnet.ackinacki.org/graphql";
 const PARAMS_DIR: &str = "./params";
 const LOGS_DIR: &str = "./logs";
 const BK_SET_CONFIG: &str = "./bk_set.json";
@@ -72,12 +72,21 @@ async fn main() -> anyhow::Result<()> {
     key_manager.ensure_primary_keys(&bk_set)?;
     info!("keys ready");
 
-    // 4. Wait for node to produce blocks.
-    info!("waiting {:?} for node to produce blocks...", INITIAL_WAIT);
+    // 4. Find a recent starting block (we need blocks whose attestations use the current BK set).
+    info!("finding starting block...");
     tokio::time::sleep(INITIAL_WAIT).await;
+    let blocks = gql.query_latest_blocks(20).await?;
+    let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
+    // Start a few blocks behind the latest so attestations are available.
+    // Stay close to latest to avoid BK set rotation mismatches.
+    let start_seq = if latest_seq > 3 { (latest_seq - 3) as u32 } else { 1 };
+    let mut last_seen_seqno: u32 = start_seq.saturating_sub(1);
+    info!(
+        "latest block on node: seq_no={}, starting from: seq_no={} (last_seen={})",
+        latest_seq, start_seq, last_seen_seqno
+    );
 
     // 5. Main loop.
-    let mut last_seen_seqno: u32 = 0;
     let mut stats = Stats::default();
     let t_total = Instant::now();
 
@@ -102,8 +111,25 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 }
 
-                info!("block {}: primary attestation found, {} signers",
-                    target_seqno, att.signature_occurrences.len());
+                info!("block {}: primary attestation found, {} signers, indices={:?}",
+                    target_seqno, att.signature_occurrences.len(),
+                    att.signature_occurrences.keys().collect::<Vec<_>>());
+
+                // Verify all attestation signers are in our BK set.
+                let missing: Vec<u16> = att.signature_occurrences.keys()
+                    .filter(|idx| !bk_set.contains_key(idx))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    warn!(
+                        "block {}: attestation has signers {:?} not in current BK set {:?}, skipping \
+                         (BK set may have rotated since this block was produced)",
+                        target_seqno, missing, bk_set.keys().collect::<Vec<_>>()
+                    );
+                    stats.skipped_blocks += 1;
+                    last_seen_seqno = target_seqno;
+                    continue;
+                }
 
                 // The raw_bytes from BOC parsing are already in the correct
                 // bincode Envelope<AttestationData> format.

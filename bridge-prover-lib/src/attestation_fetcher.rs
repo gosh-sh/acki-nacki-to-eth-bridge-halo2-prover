@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context};
+use halo2_base::halo2_proofs::halo2curves::bls12_381::G1Affine;
 use tracing::info;
 
 use crate::gql_client::GqlClient;
@@ -94,9 +95,48 @@ pub async fn fetch_initial_bk_set(
         );
     }
 
+    // Normalize pubkeys: compress 96-byte uncompressed keys to 48-byte compressed.
+    let bk_set = normalize_bk_set_pubkeys(bk_set)?;
+
     info!("extracted BK set with {} signers: {:?}",
         bk_set.len(), bk_set.keys().collect::<Vec<_>>());
     Ok(bk_set)
+}
+
+/// Normalize BK set pubkeys: compress 96-byte uncompressed keys to 48-byte compressed.
+///
+/// The circuit's `deserialize_g1_pubkey` expects 48-byte compressed BLS G1 pubkeys.
+/// Shellnet returns 96-byte uncompressed keys from bkSetUpdates. This function
+/// detects and compresses them.
+pub fn normalize_bk_set_pubkeys(
+    bk_set: HashMap<u16, Vec<u8>>,
+) -> anyhow::Result<HashMap<u16, Vec<u8>>> {
+    let mut normalized = HashMap::new();
+    for (idx, pk_bytes) in bk_set {
+        let compressed = match pk_bytes.len() {
+            48 => pk_bytes, // already compressed
+            96 => {
+                // Try uncompressed BE then LE
+                let bytes: [u8; 96] = pk_bytes.clone().try_into()
+                    .map_err(|_| anyhow::format_err!("invalid 96-byte pubkey"))?;
+                let opt_be = G1Affine::from_uncompressed_be(&bytes);
+                let pt = if bool::from(opt_be.is_some()) {
+                    opt_be.unwrap()
+                } else {
+                    let opt_le = G1Affine::from_uncompressed_le(&bytes);
+                    if bool::from(opt_le.is_some()) {
+                        opt_le.unwrap()
+                    } else {
+                        bail!("failed to deserialize 96-byte pubkey for signer {}", idx);
+                    }
+                };
+                pt.to_compressed_be().to_vec()
+            }
+            other => bail!("unexpected pubkey size {} for signer {} (expected 48 or 96)", other, idx),
+        };
+        normalized.insert(idx, compressed);
+    }
+    Ok(normalized)
 }
 
 /// Variant discriminants for BlockKeeperSetChange enum (bincode u32).
@@ -149,12 +189,12 @@ pub fn load_bk_set_from_config(path: &str) -> anyhow::Result<HashMap<u16, Vec<u8
     for (k, v) in &map {
         let idx: u16 = k.parse().context("invalid signer index in config")?;
         let pk_bytes = hex::decode(v).context("invalid pubkey hex in config")?;
-        if pk_bytes.len() != 48 {
-            bail!("pubkey for signer {} has {} bytes, expected 48", idx, pk_bytes.len());
+        if pk_bytes.len() != 48 && pk_bytes.len() != 96 {
+            bail!("pubkey for signer {} has {} bytes, expected 48 or 96", idx, pk_bytes.len());
         }
         bk_set.insert(idx, pk_bytes);
     }
-    Ok(bk_set)
+    normalize_bk_set_pubkeys(bk_set)
 }
 
 /// Fetch the attestation for block N by parsing block N+1's BOC.
