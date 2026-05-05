@@ -1,0 +1,42 @@
+[workspace]
+members = ["bridge-prover-lib", "bridge-prover-daemon", "bridge-verifier-daemon"]
+resolver = "2"
+
+[workspace.dependencies]
+# Halo2 ecosystem
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom"] }
+halo2-ecc = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom"] }
+
+# Circuit and crypto libs
+attestation-bls-checker-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
+bridge-parsers = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
+bridge-test-data-gen = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
+gosh-bls-verification = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
+gosh-zk-snark-halo2-utils = { git = "https://github.com/gosh-sh/gosh-zk-snark-halo2-utils", branch = "main" }
+pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
+
+# Async + networking
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1"
+hex = "0.4"
+num-bigint = "0.4"
+
+# Utilities
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+
+# Local crates
+bridge-prover-lib = { path = "bridge-prover-lib" }
+
+[patch.crates-io]
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main" }
+
+[profile.dev]
+opt-level = 3

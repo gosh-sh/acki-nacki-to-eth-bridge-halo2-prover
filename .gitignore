@@ -1,0 +1,7 @@
+/target/
+*.srs
+params/*.bin
+params/*.json
+proofs/
+logs/
+.DS_Store
