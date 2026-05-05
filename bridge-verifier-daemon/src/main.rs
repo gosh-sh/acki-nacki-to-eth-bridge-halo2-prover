@@ -228,17 +228,17 @@ const BK_SET_CONFIG: &str = "./bk_set.json";
 async fn load_bk_set_commitment() -> anyhow::Result<Fr> {
     // Try GraphQL first, then config file.
     let bk_set = match bridge_prover_lib::gql_client::create_client(GQL_ENDPOINT) {
-        Ok(gql) => match bridge_prover_lib::attestation_fetcher::fetch_initial_bk_set(&gql).await {
+        Ok(gql) => match bridge_prover_lib::bk_set_fetcher::fetch_bk_set(&gql).await {
             Ok(bk) => {
                 info!("BK set loaded from GraphQL: {} signers", bk.len());
                 bk
             }
             Err(e) => {
                 info!("GraphQL BK set failed ({}), trying config file", e);
-                bridge_prover_lib::attestation_fetcher::load_bk_set_from_config(BK_SET_CONFIG)?
+                bridge_prover_lib::bk_set_fetcher::load_bk_set_from_config(BK_SET_CONFIG)?
             }
         },
-        Err(_) => bridge_prover_lib::attestation_fetcher::load_bk_set_from_config(BK_SET_CONFIG)?,
+        Err(_) => bridge_prover_lib::bk_set_fetcher::load_bk_set_from_config(BK_SET_CONFIG)?,
     };
     Ok(poseidon::compute_bk_set_poseidon(
         &bk_set,

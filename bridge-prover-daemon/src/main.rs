@@ -219,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn load_bk_set(gql: &gql_client::GqlClient) -> anyhow::Result<HashMap<u16, Vec<u8>>> {
     // Try GraphQL first.
-    match attestation_fetcher::fetch_initial_bk_set(gql).await {
+    match bridge_prover_lib::bk_set_fetcher::fetch_bk_set(gql).await {
         Ok(bk_set) => return Ok(bk_set),
         Err(e) => {
             warn!("failed to fetch BK set from GraphQL: {}", e);
@@ -227,7 +227,7 @@ async fn load_bk_set(gql: &gql_client::GqlClient) -> anyhow::Result<HashMap<u16,
         }
     }
     // Fallback to config file.
-    attestation_fetcher::load_bk_set_from_config(BK_SET_CONFIG)
+    bridge_prover_lib::bk_set_fetcher::load_bk_set_from_config(BK_SET_CONFIG)
         .context("failed to load BK set from both GraphQL and config file")
 }
 

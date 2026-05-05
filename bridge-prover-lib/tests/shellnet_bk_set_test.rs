@@ -6,7 +6,7 @@ async fn test_shellnet_bk_set_extraction() {
         .expect("failed to create shellnet client");
 
     println!("Querying shellnet bkSetUpdates...");
-    match bridge_prover_lib::attestation_fetcher::fetch_initial_bk_set(&gql).await {
+    match bridge_prover_lib::bk_set_fetcher::fetch_bk_set(&gql).await {
         Ok(bk_set) => {
             println!("BK set extracted: {} signers", bk_set.len());
             let mut keys: Vec<u16> = bk_set.keys().cloned().collect();
