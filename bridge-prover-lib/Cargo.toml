@@ -8,6 +8,7 @@ halo2-base = { workspace = true }
 halo2-ecc = { workspace = true }
 attestation-bls-checker-circuit = { workspace = true }
 bridge-parsers = { workspace = true }
+bridge-poseidon = { workspace = true }
 bridge-test-data-gen = { workspace = true }
 gosh-bls-verification = { workspace = true }
 gosh-zk-snark-halo2-utils = { workspace = true }

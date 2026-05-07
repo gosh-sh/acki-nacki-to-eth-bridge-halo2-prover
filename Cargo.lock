@@ -47,9 +47,10 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "attestation-bls-checker-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#61d74c31c7cfbdf9f0424eed6e72a35fd8dd6aa5"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#346db609e4dd21cda4ea8e8d22b89c503662510b"
 dependencies = [
  "bridge-parsers",
+ "bridge-poseidon",
  "gosh-bls-verification",
  "gosh-sha256-chip",
  "halo2-base",
@@ -120,9 +121,20 @@ dependencies = [
 [[package]]
 name = "bridge-parsers"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#61d74c31c7cfbdf9f0424eed6e72a35fd8dd6aa5"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#346db609e4dd21cda4ea8e8d22b89c503662510b"
 dependencies = [
  "hex",
+]
+
+[[package]]
+name = "bridge-poseidon"
+version = "0.1.0"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#346db609e4dd21cda4ea8e8d22b89c503662510b"
+dependencies = [
+ "gosh-bls-verification",
+ "halo2-base",
+ "num-bigint",
+ "pse-poseidon",
 ]
 
 [[package]]
@@ -148,6 +160,7 @@ dependencies = [
  "base64",
  "bincode",
  "bridge-parsers",
+ "bridge-poseidon",
  "bridge-test-data-gen",
  "gosh-bls-verification",
  "gosh-zk-snark-halo2-utils",
@@ -167,15 +180,14 @@ dependencies = [
 [[package]]
 name = "bridge-test-data-gen"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#61d74c31c7cfbdf9f0424eed6e72a35fd8dd6aa5"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#346db609e4dd21cda4ea8e8d22b89c503662510b"
 dependencies = [
  "anyhow",
  "bincode",
+ "bridge-poseidon",
  "gosh_blst",
  "halo2-base",
  "hex",
- "num-bigint",
- "pse-poseidon",
  "rand 0.8.6",
  "serde",
  "serde_with",

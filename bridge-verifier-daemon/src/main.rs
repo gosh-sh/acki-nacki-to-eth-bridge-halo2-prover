@@ -240,11 +240,7 @@ async fn load_bk_set_commitment() -> anyhow::Result<Fr> {
         },
         Err(_) => bridge_prover_lib::bk_set_fetcher::load_bk_set_from_config(BK_SET_CONFIG)?,
     };
-    Ok(poseidon::compute_bk_set_poseidon(
-        &bk_set,
-        bridge_prover_lib::keys::circuit_limb_bits(),
-        bridge_prover_lib::keys::circuit_num_limbs(),
-    ))
+    Ok(poseidon::compute_bk_set_poseidon(&bk_set).0)
 }
 
 /// Scan the proofs/ directory for the first proof file and return its seq_no.

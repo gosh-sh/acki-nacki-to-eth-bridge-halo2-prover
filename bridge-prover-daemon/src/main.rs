@@ -55,11 +55,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Fetch BK set.
     let bk_set = load_bk_set(&gql).await?;
-    let bk_set_commitment = poseidon::compute_bk_set_poseidon(
-        &bk_set,
-        bridge_prover_lib::keys::circuit_limb_bits(),
-        bridge_prover_lib::keys::circuit_num_limbs(),
-    );
+    let (bk_set_commitment, _) = poseidon::compute_bk_set_poseidon(&bk_set);
     info!(
         "BK set: {} signers, commitment={:?}",
         bk_set.len(),

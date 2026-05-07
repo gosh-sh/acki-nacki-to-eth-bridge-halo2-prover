@@ -40,7 +40,7 @@ pub fn generate_primary_proof(
 
     // Compute expected public instances.
     let envelope_hash_fr = compute_envelope_hash_fr(attestation_bytes);
-    let bk_set_commitment_fr = compute_bk_set_poseidon(bk_set, limb_bits, num_limbs);
+    let (bk_set_commitment_fr, _) = compute_bk_set_poseidon(bk_set);
     let block_seq_no = extract_block_seq_no(attestation_bytes);
     let block_seq_no_fr = Fr::from(block_seq_no as u64);
     let last_seen_fr = Fr::from(last_seen_block_seqno as u64);
