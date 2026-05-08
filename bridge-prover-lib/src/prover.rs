@@ -22,7 +22,7 @@ use crate::poseidon::compute_bk_set_poseidon;
 #[derive(Debug, Clone)]
 pub struct ProofOutput {
     pub proof_bytes: Vec<u8>,
-    pub envelope_hash_fr: Fr,
+    pub block_id_fr: Fr,
     pub bk_set_commitment_fr: Fr,
     pub block_seq_no: u32,
     pub last_seen_block_seqno: u32,
@@ -39,7 +39,7 @@ pub fn generate_primary_proof(
     let num_limbs = keys::circuit_num_limbs();
 
     // Compute expected public instances.
-    let envelope_hash_fr = compute_envelope_hash_fr(attestation_bytes);
+    let block_id_fr = compute_block_id_fr(attestation_bytes);
     let (bk_set_commitment_fr, _) = compute_bk_set_poseidon(bk_set);
     let block_seq_no = extract_block_seq_no(attestation_bytes);
     let block_seq_no_fr = Fr::from(block_seq_no as u64);
@@ -65,7 +65,7 @@ pub fn generate_primary_proof(
     circuit.override_base_circuit_params(key_manager.primary_config().clone());
 
     // Generate proof.
-    let instances = vec![envelope_hash_fr, bk_set_commitment_fr, block_seq_no_fr, last_seen_fr];
+    let instances = vec![block_id_fr, bk_set_commitment_fr, block_seq_no_fr, last_seen_fr];
     let instance_refs: &[&[Fr]] = &[&instances];
     let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(vec![]);
     create_proof::<
@@ -88,25 +88,28 @@ pub fn generate_primary_proof(
 
     Ok(ProofOutput {
         proof_bytes,
-        envelope_hash_fr,
+        block_id_fr,
         bk_set_commitment_fr,
         block_seq_no,
         last_seen_block_seqno,
     })
 }
 
-/// Extract envelope_hash as Fr from raw attestation bytes.
-fn compute_envelope_hash_fr(attestation_bytes: &[u8]) -> Fr {
-    const ENVELOPE_HASH_REL_OFFSET: usize = 84;
+/// Extract block_id as Fr from raw attestation bytes.
+///
+/// block_id is at offset 48 within AttestationData:
+/// parent_block_id(40) + length_prefix(8) = 48, then 32 bytes of hash.
+fn compute_block_id_fr(attestation_bytes: &[u8]) -> Fr {
+    const BLOCK_ID_REL_OFFSET: usize = 48;
 
     let num_signers = parse_num_signers(attestation_bytes);
-    let abs_offset = attestation_data_offset(num_signers) + ENVELOPE_HASH_REL_OFFSET;
-    let env_hash_bytes = &attestation_bytes[abs_offset..abs_offset + 32];
+    let abs_offset = attestation_data_offset(num_signers) + BLOCK_ID_REL_OFFSET;
+    let block_id_bytes = &attestation_bytes[abs_offset..abs_offset + 32];
 
     let mut result = Fr::zero();
     let mut power = Fr::one();
     let base = Fr::from(256u64);
-    for &byte in env_hash_bytes {
+    for &byte in block_id_bytes {
         result += Fr::from(byte as u64) * power;
         power *= base;
     }

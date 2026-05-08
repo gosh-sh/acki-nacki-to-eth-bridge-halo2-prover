@@ -47,7 +47,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "attestation-bls-checker-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#346db609e4dd21cda4ea8e8d22b89c503662510b"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#8b5cb74b3595989762a709e610553668978bb3e7"
 dependencies = [
  "bridge-parsers",
  "bridge-poseidon",
@@ -121,7 +121,7 @@ dependencies = [
 [[package]]
 name = "bridge-parsers"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#346db609e4dd21cda4ea8e8d22b89c503662510b"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#8b5cb74b3595989762a709e610553668978bb3e7"
 dependencies = [
  "hex",
 ]
@@ -129,7 +129,7 @@ dependencies = [
 [[package]]
 name = "bridge-poseidon"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#346db609e4dd21cda4ea8e8d22b89c503662510b"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#8b5cb74b3595989762a709e610553668978bb3e7"
 dependencies = [
  "gosh-bls-verification",
  "halo2-base",
@@ -180,11 +180,12 @@ dependencies = [
 [[package]]
 name = "bridge-test-data-gen"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#346db609e4dd21cda4ea8e8d22b89c503662510b"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#8b5cb74b3595989762a709e610553668978bb3e7"
 dependencies = [
  "anyhow",
  "bincode",
  "bridge-poseidon",
+ "gosh-dense-balanced-tree",
  "gosh_blst",
  "halo2-base",
  "hex",
@@ -562,6 +563,15 @@ dependencies = [
  "halo2-base",
  "halo2-ecc",
  "sha2",
+]
+
+[[package]]
+name = "gosh-dense-balanced-tree"
+version = "0.1.0"
+source = "git+https://github.com/gosh-sh/gosh-halo2-crypto-lib?branch=main#9a917fe0a6a5e04cd6b6affb3d93e19399ff5ae7"
+dependencies = [
+ "halo2-base",
+ "pse-poseidon",
 ]
 
 [[package]]

@@ -170,7 +170,7 @@ async fn test_prove_10_live_blocks() {
         total_proof_time += proof_time;
         println!("  proof: {} bytes, generated in {:?}", proof_output.proof_bytes.len(), proof_time);
         println!("  instances:");
-        println!("    [0] envelope_hash: {:?}", proof_output.envelope_hash_fr);
+        println!("    [0] block_id: {:?}", proof_output.block_id_fr);
         println!("    [1] bk_commit:     {:?}", proof_output.bk_set_commitment_fr);
         println!("    [2] block_seq_no:  {}", proof_output.block_seq_no);
         println!("    [3] last_seen:     {}", proof_output.last_seen_block_seqno);
@@ -178,7 +178,7 @@ async fn test_prove_10_live_blocks() {
         // Verify proof.
         let t = Instant::now();
         let instances = vec![
-            proof_output.envelope_hash_fr,
+            proof_output.block_id_fr,
             proof_output.bk_set_commitment_fr,
             bridge_prover_lib::Fr::from(proof_output.block_seq_no as u64),
             bridge_prover_lib::Fr::from(last_seen as u64),

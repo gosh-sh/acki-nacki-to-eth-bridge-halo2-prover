@@ -122,10 +122,10 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // Reconstruct public instances.
-            let envelope_hash_fr = match ipc::fr_from_hex(&request.envelope_hash_hex) {
+            let block_id_fr = match ipc::fr_from_hex(&request.block_id_hex) {
                 Ok(fr) => fr,
                 Err(e) => {
-                    let msg = format!("invalid envelope_hash_hex: {}", e);
+                    let msg = format!("invalid block_id_hex: {}", e);
                     error!("block {}: {}", next_seqno, msg);
                     write_failure(next_seqno, &msg);
                     stats.total_proofs += 1;
@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
             let last_seen_fr = Fr::from(request.last_seen_block_seqno as u64);
 
             let instances = vec![
-                envelope_hash_fr,
+                block_id_fr,
                 bk_set_commitment,
                 block_seq_no_fr,
                 last_seen_fr,
@@ -186,8 +186,8 @@ async fn main() -> anyhow::Result<()> {
                     next_seqno, verify_time
                 );
                 error!(
-                    "  instances: envelope_hash={}, bk_commit={:?}, seq_no={}, last_seen={}",
-                    request.envelope_hash_hex, bk_set_commitment, request.block_seq_no,
+                    "  instances: block_id={}, bk_commit={:?}, seq_no={}, last_seen={}",
+                    request.block_id_hex, bk_set_commitment, request.block_seq_no,
                     request.last_seen_block_seqno
                 );
                 stats.failures.push((next_seqno, msg.clone()));

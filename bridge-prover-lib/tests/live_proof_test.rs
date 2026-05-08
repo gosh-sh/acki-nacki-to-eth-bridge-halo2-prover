@@ -64,14 +64,14 @@ fn test_live_proof_generation_and_verification() {
     println!("[timing] proof generation: {:?}", proof_time);
     println!("  proof size: {} bytes", proof_output.proof_bytes.len());
     println!("  block_seq_no: {}", proof_output.block_seq_no);
-    println!("  envelope_hash: {:?}", proof_output.envelope_hash_fr);
+    println!("  block_id: {:?}", proof_output.block_id_fr);
     println!("  bk_set_commitment: {:?}", proof_output.bk_set_commitment_fr);
 
     // 5. Verify proof.
     println!("\nStep 3: Verifying proof...");
     let t = Instant::now();
     let instances = vec![
-        proof_output.envelope_hash_fr,
+        proof_output.block_id_fr,
         proof_output.bk_set_commitment_fr,
         bridge_prover_lib::Fr::from(proof_output.block_seq_no as u64),
         bridge_prover_lib::Fr::from(last_seen_seqno as u64),

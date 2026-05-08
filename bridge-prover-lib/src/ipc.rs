@@ -15,7 +15,7 @@ const PROOFS_DIR: &str = "proofs";
 pub struct ProofRequest {
     pub block_seq_no: u32,
     pub last_seen_block_seqno: u32,
-    pub envelope_hash_hex: String,
+    pub block_id_hex: String,
     pub proof_hex: String,
 }
 
@@ -45,7 +45,7 @@ pub fn write_proof(seq_no: u32, output: &ProofOutput) -> anyhow::Result<()> {
     let request = ProofRequest {
         block_seq_no: output.block_seq_no,
         last_seen_block_seqno: output.last_seen_block_seqno,
-        envelope_hash_hex: hex::encode(output.envelope_hash_fr.to_repr().as_ref()),
+        block_id_hex: hex::encode(output.block_id_fr.to_repr().as_ref()),
         proof_hex: hex::encode(&output.proof_bytes),
     };
     let json = serde_json::to_string_pretty(&request)?;
