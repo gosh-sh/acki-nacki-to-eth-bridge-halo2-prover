@@ -9,12 +9,19 @@ halo2-ecc = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12
 
 # Circuit and crypto libs
 attestation-bls-checker-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
+historical-layer-hashes-movement-checker-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
 bridge-parsers = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
 bridge-poseidon = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
 bridge-test-data-gen = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
 gosh-bls-verification = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
+gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
+gosh-sha256-chip = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
 gosh-zk-snark-halo2-utils = { git = "https://github.com/gosh-sh/gosh-zk-snark-halo2-utils", branch = "main" }
 pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
+tvm_vm = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v2.25.2-rc.an", features = ["gosh"] }
+tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v2.25.2-rc.an" }
+node = { git = "https://github.com/gosh-sh/acki-nacki.git", branch = "latest_an_to_eth_bridge_test" }
+node-types = { git = "https://github.com/gosh-sh/acki-nacki.git", branch = "latest_an_to_eth_bridge_test" }
 
 # Async + networking
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -27,6 +34,9 @@ bincode = "1"
 hex = "0.4"
 base64 = "0.22"
 num-bigint = "0.4"
+
+# Hashing
+sha2 = "0.10"
 
 # Utilities
 anyhow = "1"

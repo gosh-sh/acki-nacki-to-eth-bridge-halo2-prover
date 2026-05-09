@@ -200,6 +200,80 @@ impl GqlClient {
         Ok(updates)
     }
 
+    /// Fetch a block's `boc` field and deserialize as `Envelope<AckiNackiBlock>`.
+    ///
+    /// The `boc` field contains the bincode-serialized `Envelope<AckiNackiBlock>`.
+    /// This gives access to block_id, envelope_hash, history_proofs, ext_messages_root,
+    /// and all other block data — same approach as `dex_data_exporter`.
+    pub async fn query_block_envelope(
+        &self,
+        seq_no: u64,
+    ) -> anyhow::Result<node::bls::envelope::Envelope<node::types::AckiNackiBlock>> {
+        let tid = "00000000000000000000000000000000000000000000000000000000000000000000";
+        let q = format!(
+            r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seq_no}) {{ boc }} }} }}"#
+        );
+        let data = self.query(&q).await?;
+        let boc_str = data
+            .pointer("/blockchain/blockByHeight/boc")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::format_err!("no boc for block at seq_no={}", seq_no))?;
+        use base64::Engine;
+        let boc_bytes = base64::engine::general_purpose::STANDARD
+            .decode(boc_str)
+            .context("failed to base64-decode boc")?;
+        bincode::deserialize(&boc_bytes)
+            .with_context(|| format!("failed to deserialize Envelope from boc at seq_no={}", seq_no))
+    }
+
+    /// Fetch block metadata by seq_no: hash, envelope_hash, seq_no.
+    /// Used for computing block leaf hashes in chain proof construction.
+    pub async fn query_block_metadata(
+        &self,
+        seq_no: u64,
+    ) -> anyhow::Result<BlockMetadata> {
+        let tid = "00000000000000000000000000000000000000000000000000000000000000000000";
+        let q = format!(
+            r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seq_no}) {{ hash envelope_hash seq_no }} }} }}"#
+        );
+        let data = self.query(&q).await?;
+        let block = data
+            .pointer("/blockchain/blockByHeight")
+            .ok_or_else(|| anyhow::format_err!("blockByHeight returned null for seq_no={}", seq_no))?;
+        if block.is_null() {
+            anyhow::bail!("block at seq_no={} not found", seq_no);
+        }
+        Ok(BlockMetadata {
+            hash: block.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            envelope_hash: block.get("envelope_hash").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            seq_no: block.get("seq_no").and_then(|v| v.as_u64()).unwrap_or(0),
+        })
+    }
+
+    /// Fetch metadata for a range of blocks [from_seq..=to_seq].
+    pub async fn query_blocks_metadata_range(
+        &self,
+        from_seq: u64,
+        to_seq: u64,
+    ) -> anyhow::Result<Vec<BlockMetadata>> {
+        let mut results = Vec::new();
+        for seq in from_seq..=to_seq {
+            match self.query_block_metadata(seq).await {
+                Ok(meta) => results.push(meta),
+                Err(e) => {
+                    tracing::warn!("failed to fetch block metadata for seq={}: {}", seq, e);
+                    // Still push a placeholder to keep alignment
+                    results.push(BlockMetadata {
+                        hash: String::new(),
+                        envelope_hash: String::new(),
+                        seq_no: seq,
+                    });
+                }
+            }
+        }
+        Ok(results)
+    }
+
     /// Fetch the first N bkSetUpdates (oldest first).
     pub async fn query_bk_set_updates(
         &self,
@@ -242,6 +316,17 @@ impl GqlClient {
         }
         Ok(updates)
     }
+}
+
+/// Block metadata used for computing block leaf hashes.
+#[derive(Debug, Clone)]
+pub struct BlockMetadata {
+    /// TVM block representation hash (legacy) as hex string.
+    pub hash: String,
+    /// Envelope hash (SHA-256 of BLS envelope) as hex string.
+    pub envelope_hash: String,
+    /// Block sequence number / height.
+    pub seq_no: u64,
 }
 
 #[derive(Debug, Clone)]
