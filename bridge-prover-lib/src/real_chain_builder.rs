@@ -414,7 +414,7 @@ pub async fn fetch_layer_root_pub(gql: &GqlClient, seqno: u64, layer: u8) -> any
 /// Fetch a specific layer's root hash from a block's history_proofs.
 /// Uses `boc` field deserialization (no `data` field needed).
 async fn fetch_layer_root(gql: &GqlClient, seqno: u64, layer: u8) -> anyhow::Result<[u8; 32]> {
-    use node::bls::envelope::BLSSignedEnvelope;
+    use node_block_client::BLSSignedEnvelope;
     let envelope = gql.query_block_envelope(seqno).await?;
     let history_proofs = envelope.data().common_section().history_proofs();
     let proof = history_proofs
@@ -445,13 +445,13 @@ async fn fetch_block_leaf_hash_from_boc(gql: &GqlClient, seqno: u64) -> anyhow::
         .context("failed to base64-decode boc")?;
 
     // Deserialize as Envelope<AckiNackiBlock> — same as dex_data_exporter does.
-    use node::bls::envelope::BLSSignedEnvelope;
-    let envelope: node::bls::envelope::Envelope<node::types::AckiNackiBlock> =
+    use node_block_client::BLSSignedEnvelope;
+    let envelope: node_block_client::Envelope<node_block_client::AckiNackiBlock> =
         bincode::deserialize(&boc_bytes)
             .with_context(|| format!("failed to deserialize Envelope<AckiNackiBlock> from boc for block {}", seqno))?;
 
     let block_id = envelope.data().identifier();
-    let env_hash = node::types::envelope_hash::envelope_hash(&envelope);
+    let env_hash = node_block_client::envelope_hash(&envelope);
     let ext_out_root = *envelope.data().common_section().tracked_ext_out_messages_root();
 
     Ok(compute_block_leaf_hash(block_id.as_array(), &env_hash.0, &ext_out_root))

@@ -35,7 +35,7 @@ const GQL_ENDPOINT: &str = "http://localhost/graphql";
 // const HISTORY_WINDOW_SIZE: u64 = 8; // production
 const HISTORY_WINDOW_SIZE: u64 = 4; // Must match node's HISTORY_PROOF_WINDOW_SIZE
 
-const MAX_KEY_BLOCKS_TO_PROCESS: u32 = 20;
+const MAX_KEY_BLOCKS_TO_PROCESS: u32 = 16;
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const SLEEP_ON_RETRY: Duration = Duration::from_secs(5);
 const VERIFIER_TIMEOUT: Duration = Duration::from_secs(300);
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
                     .await
                 {
                     Ok(envelope) => {
-                        use node::bls::envelope::BLSSignedEnvelope;
+                        use node_block_client::BLSSignedEnvelope;
                         let hp = envelope.data().common_section().history_proofs();
                         info!("first key block has {} history_proofs layers", hp.len());
                         hp.iter()
@@ -321,7 +321,7 @@ async fn main() -> anyhow::Result<()> {
             .await
         {
             Ok(envelope) => {
-                use node::bls::envelope::BLSSignedEnvelope;
+                use node_block_client::BLSSignedEnvelope;
                 envelope.data().common_section().history_proofs()
                     .iter()
                     .map(|(&layer, proof)| (*proof.root_hash(), layer))
@@ -410,7 +410,7 @@ async fn generate_layer_proof_for_key_block(
 ) -> anyhow::Result<layer_prover::LayerProofOutput> {
     use bridge_prover_lib::block_id_tree;
     use bridge_prover_lib::real_chain_builder;
-    use node::bls::envelope::BLSSignedEnvelope;
+    use node_block_client::BLSSignedEnvelope;
 
     // 1. Fetch block as Envelope<AckiNackiBlock> via boc deserialization.
     info!("fetching block envelope for seq={}...", target_seqno);

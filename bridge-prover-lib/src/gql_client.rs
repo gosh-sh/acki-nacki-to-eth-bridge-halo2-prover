@@ -208,7 +208,7 @@ impl GqlClient {
     pub async fn query_block_envelope(
         &self,
         seq_no: u64,
-    ) -> anyhow::Result<node::bls::envelope::Envelope<node::types::AckiNackiBlock>> {
+    ) -> anyhow::Result<node_block_client::Envelope<node_block_client::AckiNackiBlock>> {
         let tid = "00000000000000000000000000000000000000000000000000000000000000000000";
         let q = format!(
             r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seq_no}) {{ boc }} }} }}"#

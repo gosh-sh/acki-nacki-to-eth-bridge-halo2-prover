@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 bridge-prover-lib = { workspace = true }
 gosh-dense-balanced-tree = { workspace = true }
-node = { workspace = true }
+node-block-client = { workspace = true }
 bincode = { workspace = true }
 tvm_block = { workspace = true }
 halo2-base = { workspace = true }

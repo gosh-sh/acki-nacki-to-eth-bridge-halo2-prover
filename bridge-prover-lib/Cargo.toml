@@ -29,5 +29,4 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }
 tvm_vm = { workspace = true }
-node = { workspace = true }
-node-types = { workspace = true }
+node-block-client = { workspace = true }
