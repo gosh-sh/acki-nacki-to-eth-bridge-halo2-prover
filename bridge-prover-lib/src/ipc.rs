@@ -30,7 +30,6 @@ pub struct ProofRequest {
     /// Hex-encoded Circuit 2 proof bytes.
     pub layer_proof_hex: String,
     /// Block ID from Circuit 2 (Merkle tree root) as hex Fr.
-    /// May differ from block_id_hex when using synthetic chain data (PoC).
     pub layer_block_id_hex: String,
     /// BK set Poseidon commitment (from node) as hex Fr.
     pub bk_set_poseidon_hash_hex: String,

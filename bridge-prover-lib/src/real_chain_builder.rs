@@ -1,7 +1,7 @@
 //! Real Poseidon Merkle chain proof construction from actual block data.
 //!
-//! Replaces synthetic chain data with genuine proofs built by reconstructing
-//! layer Poseidon trees from intermediate key blocks fetched via GraphQL.
+//! Builds genuine chain proofs by reconstructing layer Poseidon trees from
+//! intermediate key blocks fetched via GraphQL.
 //!
 //! Tree structure per layer per window (WINDOW_SIZE=4):
 //!   Leaf [0]: higher_layer_root (layer N+1 root, or zero)
@@ -22,7 +22,7 @@ use crate::chain_proof_builder::{
 };
 use crate::gql_client::GqlClient;
 
-/// Result of building chain proofs (real or synthetic fallback).
+/// Result of building chain proofs from real block data.
 pub struct RealChainResult {
     /// Padded chain links (MAX_CHAIN_LEN entries, inactive ones at the end).
     pub chain_links: Vec<DenseChainLink>,
@@ -30,12 +30,6 @@ pub struct RealChainResult {
     pub num_steps: u8,
     /// The starting hash for the chain (prev_max_level_layer_hash bytes).
     pub prev_hash: [u8; 32],
-    /// True if this chain uses synthetic data (layer 1 fallback).
-    /// When synthetic, the preimage must be overridden with synthetic root hashes.
-    pub synthetic: bool,
-    /// Synthetic root hashes (only set when synthetic=true).
-    /// The highest active layer's hash must be written into the preimage.
-    pub synthetic_root_hashes: Option<[[u8; 32]; 10]>,
 }
 
 /// Build real Poseidon chain proofs connecting prev_max_level_layer_hash
@@ -106,10 +100,6 @@ pub async fn build_real_chain(
 ///
 /// Lists intermediate key blocks between prev and target at the chain layer's
 /// granularity, reconstructs each tree, and builds the chain.
-///
-/// For layer 2+ chains: fully real data (tree leaves are layer root hashes).
-/// For layer 1 chains: returns Err — caller should fall back to synthetic
-/// (layer 1 tree requires envelope_hash which is not reliably available from GraphQL).
 async fn build_chain_same_layer(
     gql: &GqlClient,
     state: &BridgeState,
@@ -205,8 +195,6 @@ async fn build_chain_same_layer(
         chain_links,
         num_steps,
         prev_hash,
-        synthetic: false,
-        synthetic_root_hashes: None,
     })
 }
 
@@ -275,8 +263,6 @@ async fn build_chain_for_new_layer(
         chain_links,
         num_steps,
         prev_hash,
-        synthetic: false,
-        synthetic_root_hashes: None,
     })
 }
 
@@ -313,7 +299,6 @@ async fn build_layer1_tree(
     // The key block itself is NOT in the window — the window contains
     // the W blocks BEFORE the key block.
     let window_start = key_block_seqno - window_size;
-    let ext_msg_root = [0u8; 32]; // test node: no tracked external messages
 
     let mut data_leaves = Vec::with_capacity(window_size as usize);
     for seq in window_start..window_start + window_size {
@@ -438,33 +423,6 @@ async fn fetch_layer_root(gql: &GqlClient, seqno: u64, layer: u8) -> anyhow::Res
     Ok(*proof.root_hash())
 }
 
-/// Build a SYNTHETIC chain for layer 1 (fallback when real data not available).
-///
-/// Layer 1 tree reconstruction requires envelope_hash which isn't reliably
-/// available from GraphQL. We use synthetic chain data that produces a valid
-/// proof but with a different block_id than the attestation.
-pub fn build_synthetic_chain(num_layers: usize) -> RealChainResult {
-    // Tree depth must match real trees: WINDOW_SIZE=4 → 6 leaves → pad to 8 → depth=3.
-    let chain_data = bridge_test_data_gen::layer_hashes::generate_layer_hash_chain_with_depth(num_layers, 0, 3);
-    let chain_links: Vec<DenseChainLink> = chain_data
-        .chain_proofs
-        .iter()
-        .map(|step| DenseChainLink {
-            active: step.active,
-            siblings: step.siblings.clone(),
-            position: step.position,
-            leaf_native: step.leaf_value,
-        })
-        .collect();
-    RealChainResult {
-        chain_links,
-        num_steps: (chain_data.num_prev_chain_steps + 1) as u8,
-        prev_hash: chain_data.prev_max_level_layer_hash,
-        synthetic: true,
-        synthetic_root_hashes: Some(chain_data.root_hashes),
-    }
-}
-
 /// Fetch a block's BOC from GraphQL, deserialize as Envelope<AckiNackiBlock>,
 /// and compute the block leaf hash using the exact same values the node uses.
 ///
@@ -497,15 +455,4 @@ async fn fetch_block_leaf_hash_from_boc(gql: &GqlClient, seqno: u64) -> anyhow::
     let ext_out_root = *envelope.data().common_section().tracked_ext_out_messages_root();
 
     Ok(compute_block_leaf_hash(block_id.as_array(), &env_hash.0, &ext_out_root))
-}
-
-/// Parse a hex string to [u8; 32].
-fn hex_to_bytes32(hex_str: &str) -> anyhow::Result<[u8; 32]> {
-    let bytes = hex::decode(hex_str).context("invalid hex")?;
-    if bytes.len() != 32 {
-        bail!("expected 32 bytes, got {}", bytes.len());
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&bytes);
-    Ok(arr)
 }

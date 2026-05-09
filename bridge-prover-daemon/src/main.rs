@@ -239,22 +239,11 @@ async fn main() -> anyhow::Result<()> {
         info!("key block {}: Circuit 1a proof generated", target_seqno);
 
         // ---- Circuit 2: Layer Hashes Movement Proof ----
-        // For the first proof after initialization, we generate a synthetic circuit 2 proof
-        // since we don't have previous layer hashes to chain from.
-        // For subsequent proofs, we build the real chain.
-
-        // Build layer hashes preimage.
-        // TODO: Extract actual history_proofs from the block data (BOC parsing).
-        // For now, we use the block's known properties to build a test preimage.
-        // This is a PoC — the full implementation would parse the CommonSection.
-
-        // For the PoC, we construct Circuit 2 inputs using synthetic data that
-        // produces the same block_id as the real block. This requires:
-        // 1. Knowing the real layer hashes from the block
-        // 2. Knowing the Merkle tree siblings
-        //
-        // Since we can't yet parse the full block structure, we'll generate
-        // a Circuit 2 proof using test data for now, and note this as TODO.
+        // Inputs are reconstructed from real block data:
+        //   - preimage: history_proofs parsed from the target block's CommonSection
+        //   - siblings: 8-leaf SHA-256 Merkle path for L0 (Poseidon over the preimage)
+        //   - chain_links: real Poseidon Merkle proofs walked across intermediate
+        //     key blocks fetched via GraphQL (see real_chain_builder).
         // Load layer PK on demand, unload after to free ~2.8 GB.
         info!("key block {}: loading layer PK...", target_seqno);
         key_manager.load_layer_pk()?;

@@ -224,7 +224,6 @@ async fn main() -> anyhow::Result<()> {
             // Build Circuit 2 public instances (14 values).
             let mut layer_instances = Vec::with_capacity(14);
             // Circuit 2 computes its own block_id from the Merkle path.
-            // Use the layer-specific block_id (may differ from primary when using synthetic chain data).
             let layer_block_id_hex = request.layer_block_id_hex.as_str();
             let layer_block_id_fr = match ipc::fr_from_hex(layer_block_id_hex) {
                 Ok(fr) => fr,
@@ -259,10 +258,6 @@ async fn main() -> anyhow::Result<()> {
                 if layer_verified { "VERIFIED" } else { "FAILED" },
                 layer_time
             );
-
-            // Cross-check: block_id should match between circuits.
-            // (In the PoC with synthetic Circuit 2 data, they won't match.)
-            // TODO: Enforce matching when using real block data.
 
             // Record results.
             stats.total_proofs += 1;
