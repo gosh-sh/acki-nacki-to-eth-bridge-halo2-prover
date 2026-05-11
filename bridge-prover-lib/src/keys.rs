@@ -181,19 +181,38 @@ impl KeyManager {
         info!("running keygen for layer circuit (this may take ~30s)...");
 
         // Build a reference circuit with synthetic test data.
-        // Tree depth must match real trees from the node:
+        //
+        // Of the three parameters to `generate_layer_hash_chain_with_depth`,
+        // only `tree_depth` affects the resulting VK/PK: it controls the
+        // number of Poseidon Merkle levels inside `dense_merkle_root_circuit`
+        // and therefore the constraint count. `num_layers` and
+        // `num_prev_chain_steps` only populate the synthetic witness — the
+        // circuit always iterates over MAX_LAYERS (=10) and MAX_CHAIN_LEN
+        // (=11) and masks inactive slots in-circuit. See
+        // `verify_chain_of_dense_proofs` in gosh-halo2-crypto-lib's
+        // dense-balanced-tree: "the circuit shape is fixed regardless of how
+        // many steps are actually active, so one verification key works for
+        // any chain length in [1, MAX_CHAIN_LEN]".
+        //
+        // REF_NUM_LAYERS / REF_NUM_PREV_CHAIN_STEPS are mid-range values
+        // chosen to exercise non-trivial paths during keygen, but any other
+        // admissible pair would yield the same VK/PK.
+        //
+        // REF_TREE_DEPTH must match real trees from the node:
         //   WINDOW=4   →  6 leaves → pad   8 → depth=3
         //   WINDOW=8   → 10 leaves → pad  16 → depth=4
         //   WINDOW=128 →130 leaves → pad 256 → depth=8
-        // Derived from the shared `HISTORY_PROOF_WINDOW_SIZE` so this stays in
-        // lock-step with the node — see bridge-prover-bugfix/BUG_REPORT.md.
+        // Derived from the shared `HISTORY_PROOF_WINDOW_SIZE` so this stays
+        // in lock-step with the node — see bridge-prover-bugfix/BUG_REPORT.md.
+        const REF_NUM_LAYERS: usize = 3;
+        const REF_NUM_PREV_CHAIN_STEPS: usize = 2;
         const REF_TREE_DEPTH: usize =
             (node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE + 2)
                 .next_power_of_two()
                 .trailing_zeros() as usize;
         let chain_data = bridge_test_data_gen::layer_hashes::generate_layer_hash_chain_with_depth(
-            3,
-            2,
+            REF_NUM_LAYERS,
+            REF_NUM_PREV_CHAIN_STEPS,
             REF_TREE_DEPTH,
         );
         let preimage = build_reference_preimage(&chain_data);
