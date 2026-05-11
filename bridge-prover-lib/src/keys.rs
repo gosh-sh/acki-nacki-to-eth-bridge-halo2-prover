@@ -181,8 +181,21 @@ impl KeyManager {
         info!("running keygen for layer circuit (this may take ~30s)...");
 
         // Build a reference circuit with synthetic test data.
-        // Tree depth must match real trees: WINDOW_SIZE=4 → 6 leaves → pad to 8 → depth=3.
-        let chain_data = bridge_test_data_gen::layer_hashes::generate_layer_hash_chain_with_depth(3, 2, 3);
+        // Tree depth must match real trees from the node:
+        //   WINDOW=4   →  6 leaves → pad   8 → depth=3
+        //   WINDOW=8   → 10 leaves → pad  16 → depth=4
+        //   WINDOW=128 →130 leaves → pad 256 → depth=8
+        // Derived from the shared `HISTORY_PROOF_WINDOW_SIZE` so this stays in
+        // lock-step with the node — see bridge-prover-bugfix/BUG_REPORT.md.
+        const REF_TREE_DEPTH: usize =
+            (node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE + 2)
+                .next_power_of_two()
+                .trailing_zeros() as usize;
+        let chain_data = bridge_test_data_gen::layer_hashes::generate_layer_hash_chain_with_depth(
+            3,
+            2,
+            REF_TREE_DEPTH,
+        );
         let preimage = build_reference_preimage(&chain_data);
         let siblings = [[0x10u8; 32], [0x20u8; 32], [0x30u8; 32]];
         let prev_hash_fr = gosh_dense_balanced_tree::bytes_to_fr(&chain_data.prev_max_level_layer_hash);

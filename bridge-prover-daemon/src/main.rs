@@ -31,9 +31,12 @@ use bridge_prover_lib::prover;
 
 const GQL_ENDPOINT: &str = "http://localhost/graphql";
 
-// History window size — must match node's HISTORY_PROOF_WINDOW_SIZE.
-// const HISTORY_WINDOW_SIZE: u64 = 8; // production
-const HISTORY_WINDOW_SIZE: u64 = 4; // Must match node's HISTORY_PROOF_WINDOW_SIZE
+// History window size — imported from the node-block-client crate so it can
+// never drift from the node. To change the window size, edit
+// `node/libs/node-block-client/src/history_proof.rs` in acki-nacki and bump
+// the git rev of node-block-client here.
+const HISTORY_WINDOW_SIZE: u64 =
+    node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE as u64;
 
 const MAX_KEY_BLOCKS_TO_PROCESS: u32 = 16;
 const POLL_INTERVAL: Duration = Duration::from_secs(3);

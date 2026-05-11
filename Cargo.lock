@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "account-state"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#16d7bef6018d010ef46534a0876c2b4fd4e355b8"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
 dependencies = [
  "aerospike",
  "anyhow",
@@ -1486,7 +1486,7 @@ dependencies = [
 [[package]]
 name = "derive_setters"
 version = "0.1.6"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#16d7bef6018d010ef46534a0876c2b4fd4e355b8"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -2840,7 +2840,7 @@ dependencies = [
 [[package]]
 name = "multi-map"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#16d7bef6018d010ef46534a0876c2b4fd4e355b8"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2873,7 +2873,7 @@ dependencies = [
 [[package]]
 name = "node-block-client"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#16d7bef6018d010ef46534a0876c2b4fd4e355b8"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
 dependencies = [
  "account-state",
  "anyhow",
@@ -2899,7 +2899,7 @@ dependencies = [
 [[package]]
 name = "node-types"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#16d7bef6018d010ef46534a0876c2b4fd4e355b8"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3906,7 +3906,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3964,7 +3964,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4540,7 +4540,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4867,7 +4867,7 @@ dependencies = [
 [[package]]
 name = "trie-map"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#16d7bef6018d010ef46534a0876c2b4fd4e355b8"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5251,7 +5251,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "versioned_struct"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#16d7bef6018d010ef46534a0876c2b4fd4e355b8"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
 dependencies = [
  "bincode",
  "serde",
@@ -5261,7 +5261,7 @@ dependencies = [
 [[package]]
 name = "versioned_struct_macro"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#16d7bef6018d010ef46534a0876c2b4fd4e355b8"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5423,7 +5423,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
