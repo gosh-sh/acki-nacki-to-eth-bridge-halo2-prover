@@ -101,11 +101,11 @@ after each proof, so peak RSS stays around the larger of the two.
 - **~16 GB RAM** while a proof is being generated
 - **Docker / docker-compose** for the local Acki Nacki node
 - The companion repo [`acki-nacki`](https://github.com/gosh-sh/acki-nacki)
-  cloned locally, on branch **`latest_an_to_eth_bridge_test`** with
+  cloned locally, on branch **`latest_an_to_eth_bridge_test_lightweight`** with
   `HISTORY_PROOF_WINDOW_SIZE = 4`
 
 > The prover deserializes `boc` using the `node` and `node-types` crates from
-> branch `latest_an_to_eth_bridge_test`. **No GraphQL schema extensions are
+> branch `latest_an_to_eth_bridge_test_lightweight`. **No GraphQL schema extensions are
 > required** — only the standard `boc` field.
 
 ---
@@ -116,7 +116,7 @@ after each proof, so peak RSS stays around the larger of the two.
 
 ```bash
 cd /path/to/acki-nacki
-git checkout latest_an_to_eth_bridge_test
+git checkout latest_an_to_eth_bridge_test_lightweight
 make run
 # Wait ~2 minutes for docker compose build + node startup.
 
@@ -357,7 +357,7 @@ both failed:             0
 
 ## Performance
 
-Measured on a local clean run of `latest_an_to_eth_bridge_test`
+Measured on a local clean run of `latest_an_to_eth_bridge_test_lightweight`
 (`HISTORY_PROOF_WINDOW_SIZE=4`, `MAX_KEY_BLOCKS_TO_PROCESS=20`,
 release profile, dev box, blocks 8–84).
 
@@ -458,7 +458,7 @@ In our latest clean test all 20 of these blocks verified
 ## Integration Tests
 
 All tests below require a running local Acki Nacki node on
-`http://localhost/graphql` (branch `latest_an_to_eth_bridge_test`).
+`http://localhost/graphql` (branch `latest_an_to_eth_bridge_test_lightweight`).
 
 ```bash
 # BLS verification on a live attestation (~1 s, no proof gen)
@@ -559,7 +559,7 @@ will fail to compile `telemetry_utils` brought in by the `node` crate.
 If you accidentally placed the prover repo *inside* a checkout of `acki-nacki`,
 Cargo may try to absorb it into that workspace. The prover uses `node` and
 `node-types` as **git** dependencies (pinned to
-`branch = "latest_an_to_eth_bridge_test"`), not path dependencies — keep the
+`branch = "latest_an_to_eth_bridge_test_lightweight"`), not path dependencies — keep the
 two repos in separate directories.
 
 ### Verifier idle-shutdown during slow runs
