@@ -49,7 +49,7 @@ pub async fn build_real_chain(
         bail!("target block has no history_proofs");
     }
 
-    let prev_num_layers = state.num_layers();
+    let prev_num_layers = state.num_active_layers();
     let prev_hash = state.prev_max_level_layer_hash_for(num_layers);
     let target_hash = *target_history_proofs
         .get(&(num_layers as u8))
@@ -66,7 +66,8 @@ pub async fn build_real_chain(
     // Determine if a TRULY new layer appeared (never seen before).
     // A layer re-appearing after being absent (e.g., L2 at block 32 after
     // blocks 20-28 had only L1) is NOT a new layer — it uses same-layer chain.
-    let new_layer_appeared = num_layers > state.max_layers_ever_seen && state.max_layers_ever_seen > 0;
+    let max_ever = state.max_layers_ever_seen();
+    let new_layer_appeared = num_layers > max_ever && max_ever > 0;
 
     if new_layer_appeared {
         // New layer appeared: single step where prev_hash is a DATA leaf
@@ -112,7 +113,7 @@ async fn build_chain_same_layer(
     let chain_layer = num_layers as u8;
 
     let step_size = window_size.pow(chain_layer as u32);
-    let prev_seqno = state.last_key_block_seqno as u64;
+    let prev_seqno = state.stored_last_seen_block_seq_no;
 
     // List key block seqnos at this layer from prev+step to target (inclusive).
     let mut key_seqnos = Vec::new();

@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -21,6 +23,7 @@ use bridge_prover_lib::Fr;
 use halo2_base::halo2_proofs::halo2curves::group::ff::PrimeField;
 
 use bridge_prover_lib::attestation_fetcher;
+use bridge_prover_lib::bootstrap::{self, BootstrapSeed};
 use bridge_prover_lib::bridge_state::BridgeState;
 use bridge_prover_lib::gql_client::{self, GqlClient};
 use bridge_prover_lib::ipc;
@@ -38,7 +41,8 @@ const GQL_ENDPOINT: &str = "http://localhost/graphql";
 const HISTORY_WINDOW_SIZE: u64 =
     node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE as u64;
 
-const MAX_KEY_BLOCKS_TO_PROCESS: u32 = 16;
+/// How often to log a heartbeat summary while the loop is running.
+const STATS_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const SLEEP_ON_RETRY: Duration = Duration::from_secs(5);
 const VERIFIER_TIMEOUT: Duration = Duration::from_secs(300);
@@ -73,7 +77,20 @@ async fn main() -> anyhow::Result<()> {
     info!("=== Bridge Prover Daemon (Circuit 1a + Circuit 2) ===");
     info!("GQL endpoint: {}", GQL_ENDPOINT);
     info!("history window size: {}", HISTORY_WINDOW_SIZE);
-    info!("max key blocks: {}", MAX_KEY_BLOCKS_TO_PROCESS);
+    info!("running indefinitely; send SIGINT (Ctrl-C) to shut down cleanly");
+
+    // Graceful-shutdown flag flipped by the Ctrl-C handler. Checked at the top
+    // of each loop iteration so we never tear down mid-proof.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                tracing::info!("Ctrl-C received, shutting down at next safe point...");
+                s.store(true, Ordering::SeqCst);
+            }
+        });
+    }
 
     // 1. Connect to node.
     let gql = gql_client::create_client(GQL_ENDPOINT)?;
@@ -93,80 +110,88 @@ async fn main() -> anyhow::Result<()> {
     info!("layer keys ready");
 
     // 4. Load or create state.
-    let mut state = BridgeState::load(STATE_FILE)?;
-    info!("state loaded: initialized={}, last_key_block={}", state.initialized, state.last_key_block_seqno);
+    let mut state = BridgeState::load(STATE_FILE, HISTORY_WINDOW_SIZE as usize)?;
+    info!("state loaded: initialized={}, last_key_block={}", state.initialized, state.stored_last_seen_block_seq_no);
 
-    // 5. If not initialized, wait for first key block.
+    // 5. If not initialized, derive bootstrap seed from the first key block
+    //    and persist it for the verifier.
+    //
+    //    The prover plays the role of the "deployer" in the production analog:
+    //    it queries the node for the first key block envelope, applies the seed
+    //    to its own state, AND writes `state/bootstrap_seed.json` so the
+    //    verifier (which has no node connection) can mirror the same L1 entry.
+    //    See `bridge_prover_lib::bootstrap` for the full rationale.
     if !state.initialized {
         info!("waiting for first key block (height >= {})...", HISTORY_WINDOW_SIZE);
-        loop {
+        let bk_hash_bytes: [u8; 32] = bk_set_commitment.to_repr();
+        let seed: BootstrapSeed = loop {
             let blocks = gql.query_latest_blocks(5).await?;
             let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
             if latest_seq >= HISTORY_WINDOW_SIZE {
-                // First key block is at height = HISTORY_WINDOW_SIZE.
                 let first_key_seqno = HISTORY_WINDOW_SIZE;
-                info!("first key block available at height {}", first_key_seqno);
-
-                // Fetch block data to extract real layer hashes for initialization.
-                let meta = gql.query_block_metadata(first_key_seqno).await?;
-                let mut block_id = [0u8; 32];
-                if let Ok(bytes) = hex::decode(&meta.hash) {
-                    if bytes.len() == 32 {
-                        block_id.copy_from_slice(&bytes);
-                    }
-                }
-
-                // Extract layer hashes from the first key block via boc deserialization.
-                let init_layer_hashes: Vec<([u8; 32], u8)> = match gql
-                    .query_block_envelope(first_key_seqno)
-                    .await
-                {
-                    Ok(envelope) => {
-                        use node_block_client::BLSSignedEnvelope;
-                        let hp = envelope.data().common_section().history_proofs();
-                        info!("first key block has {} history_proofs layers", hp.len());
-                        hp.iter()
-                            .map(|(&layer, proof)| (*proof.root_hash(), layer))
-                            .collect()
+                info!("first key block available at seq_no {}", first_key_seqno);
+                match bootstrap::fetch_from_node(&gql, first_key_seqno, bk_hash_bytes).await {
+                    Ok(s) => {
+                        info!(
+                            "first key block: {} history_proofs layers, block_height={}",
+                            s.layer_hashes.len(),
+                            s.block_height,
+                        );
+                        break s;
                     }
                     Err(e) => {
-                        warn!("could not fetch first key block envelope ({}), init with empty layers", e);
-                        Vec::new()
+                        warn!("could not fetch first key block envelope ({}), retrying...", e);
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                        continue;
                     }
-                };
-
-                let bk_hash_bytes: [u8; 32] = bk_set_commitment.to_repr();
-                state.update(
-                    &init_layer_hashes,
-                    first_key_seqno as u32,
-                    block_id,
-                    bk_hash_bytes,
-                );
-                state.save(STATE_FILE)?;
-                info!(
-                    "initialized with first key block at seqno={}, layers={}",
-                    first_key_seqno,
-                    init_layer_hashes.len()
-                );
-                break;
+                }
             }
             info!("latest block: {}, waiting for height {}...", latest_seq, HISTORY_WINDOW_SIZE);
             tokio::time::sleep(POLL_INTERVAL).await;
-        }
+        };
+
+        seed.apply(&mut state);
+        state.save(STATE_FILE)?;
+        seed.save(bootstrap::DEFAULT_SEED_PATH)?;
+        info!(
+            "initialized from seed: seqno={}, height={}, layers={}; seed written to {}",
+            seed.block_seq_no,
+            seed.block_height,
+            seed.layer_hashes.len(),
+            bootstrap::DEFAULT_SEED_PATH,
+        );
     }
 
-    // 6. Main processing loop.
+    // 6. Main processing loop — runs until Ctrl-C.
     let mut stats = Stats::default();
     let t_total = Instant::now();
+    let mut last_stats_log = Instant::now();
 
-    while stats.key_blocks_processed < MAX_KEY_BLOCKS_TO_PROCESS {
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            info!("shutdown flag set, exiting main loop");
+            break;
+        }
+        if last_stats_log.elapsed() >= STATS_LOG_INTERVAL {
+            info!(
+                "[heartbeat] processed={}, primary_ok={}, layer_ok={}, verify_ok={}, fail={}, uptime={:?}",
+                stats.key_blocks_processed,
+                stats.primary_proofs_ok,
+                stats.layer_proofs_ok,
+                stats.verification_ok,
+                stats.verification_failed,
+                t_total.elapsed()
+            );
+            last_stats_log = Instant::now();
+        }
+
         // Poll for new blocks.
         let blocks = gql.query_latest_blocks(5).await?;
         let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
 
         // Find next key block to process.
         let next_key_seqno = find_next_key_block(
-            state.last_key_block_seqno as u64,
+            state.stored_last_seen_block_seq_no,
             latest_seq,
             HISTORY_WINDOW_SIZE,
         );
@@ -192,8 +217,9 @@ async fn main() -> anyhow::Result<()> {
 
         if attestation.target_type != 0 {
             info!("key block {}: fallback attestation, skipping", target_seqno);
-            // Move past this key block.
-            state.last_key_block_seqno = target_seqno as u32;
+            // Move past this key block (cursor advance only, no layer append).
+            state.stored_last_seen_block_seq_no = target_seqno;
+            state.stored_last_seen_block_height = target_seqno;
             state.save(STATE_FILE)?;
             continue;
         }
@@ -205,7 +231,8 @@ async fn main() -> anyhow::Result<()> {
             .collect();
         if !missing.is_empty() {
             warn!("key block {}: signers {:?} not in BK set, skipping", target_seqno, missing);
-            state.last_key_block_seqno = target_seqno as u32;
+            state.stored_last_seen_block_seq_no = target_seqno;
+            state.stored_last_seen_block_height = target_seqno;
             state.save(STATE_FILE)?;
             continue;
         }
@@ -222,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
             &key_manager,
             &attestation.raw_bytes,
             &bk_set,
-            state.last_key_block_seqno,
+            state.stored_last_seen_block_seq_no as u32,
         ) {
             Ok(output) => {
                 stats.primary_proofs_ok += 1;
@@ -234,7 +261,8 @@ async fn main() -> anyhow::Result<()> {
                 key_manager.unload_primary_pk();
                 stats.verification_failed += 1;
                 stats.key_blocks_processed += 1;
-                state.last_key_block_seqno = target_seqno as u32;
+                state.stored_last_seen_block_seq_no = target_seqno;
+                state.stored_last_seen_block_height = target_seqno;
                 state.save(STATE_FILE)?;
                 continue;
             }
@@ -269,7 +297,8 @@ async fn main() -> anyhow::Result<()> {
                 key_manager.unload_layer_pk();
                 stats.verification_failed += 1;
                 stats.key_blocks_processed += 1;
-                state.last_key_block_seqno = target_seqno as u32;
+                state.stored_last_seen_block_seq_no = target_seqno;
+                state.stored_last_seen_block_height = target_seqno;
                 state.save(STATE_FILE)?;
                 continue;
             }
@@ -280,10 +309,40 @@ async fn main() -> anyhow::Result<()> {
         stats.total_proof_time += proof_time;
         info!("key block {}: both proofs generated in {:?}", target_seqno, proof_time);
 
+        // Fetch the envelope once now to extract (a) the authoritative
+        // thread-anchored block_height for the ProofRequest, and (b) the
+        // layer-hash bundle reused below by `append_bundle`. The envelope is
+        // immutable once committed so doing this before vs. after the verifier
+        // call is equivalent.
+        let (state_layer_hashes, observed_height): (Vec<([u8; 32], u8)>, u64) = match gql
+            .query_block_envelope(target_seqno)
+            .await
+        {
+            Ok(envelope) => {
+                use node_block_client::BLSSignedEnvelope;
+                let cs = envelope.data().common_section();
+                let hp = cs.history_proofs();
+                let height = *cs.block_height().height();
+                let hashes = hp.iter()
+                    .map(|(&layer, proof)| (*proof.root_hash(), layer))
+                    .collect();
+                (hashes, height)
+            }
+            Err(e) => {
+                warn!(
+                    "key block {}: envelope fetch failed ({}), using seq_no as height fallback",
+                    target_seqno, e
+                );
+                (Vec::new(), target_seqno)
+            }
+        };
+
         // Write combined proof for verifier.
         let request = ipc::ProofRequest {
+            schema_version: ipc::PROOF_REQUEST_SCHEMA_VERSION,
             block_seq_no: target_seqno as u32,
-            last_seen_block_seqno: state.last_key_block_seqno,
+            block_height: observed_height,
+            last_seen_block_seqno: state.stored_last_seen_block_seq_no as u32,
             block_id_hex: ipc::fr_to_hex(&primary_proof.block_id_fr),
             primary_proof_hex: hex::encode(&primary_proof.proof_bytes),
             layer_proof_hex: hex::encode(&layer_proof.proof_bytes),
@@ -316,28 +375,16 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // ALWAYS update state with REAL layer hashes from the block's history_proofs,
-        // regardless of verification result. This ensures subsequent chain proofs
-        // use the correct prev_hash even after timeouts or failures.
-        let state_layer_hashes: Vec<([u8; 32], u8)> = match gql
-            .query_block_envelope(target_seqno)
-            .await
-        {
-            Ok(envelope) => {
-                use node_block_client::BLSSignedEnvelope;
-                envelope.data().common_section().history_proofs()
-                    .iter()
-                    .map(|(&layer, proof)| (*proof.root_hash(), layer))
-                    .collect()
-            }
-            Err(_) => Vec::new(),
-        };
+        // ALWAYS update state with the REAL layer hashes + block_height
+        // captured pre-verifier above, regardless of verification result. This
+        // ensures subsequent chain proofs use the correct prev_hash even after
+        // timeouts or failures, and that the heights[] slot reflects what the
+        // node committed (not just our seq_no proxy).
         let bk_hash_bytes: [u8; 32] = bk_set_commitment.to_repr();
-        let block_id_bytes: [u8; 32] = primary_proof.block_id_fr.to_repr();
-        state.update(
+        state.append_bundle(
             &state_layer_hashes,
-            target_seqno as u32,
-            block_id_bytes,
+            observed_height,
+            target_seqno,
             bk_hash_bytes,
         );
 

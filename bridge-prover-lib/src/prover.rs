@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use halo2_base::halo2_proofs::{
+    dev::MockProver,
     halo2curves::bn256::{Bn256, Fr, G1Affine},
     plonk::create_proof,
     poly::kzg::{commitment::KZGCommitmentScheme, multiopen::ProverSHPLONK},
     transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
 };
 use rand::rngs::OsRng;
-use tracing::info;
+use tracing::{info, warn};
 
 use attestation_bls_checker_circuit::primary_circuit::PrimaryAttestationBlsCheckerCircuit;
 use bridge_parsers::attestation_data_parser::{
@@ -66,6 +67,34 @@ pub fn generate_primary_proof(
 
     // Generate proof.
     let instances = vec![block_id_fr, bk_set_commitment_fr, block_seq_no_fr, last_seen_fr];
+
+    // Optional MockProver diagnostic. Gated by env to keep normal runs fast (k=20 is
+    // very slow under MockProver). Set BRIDGE_MOCK_PROVE=1 to enable.
+    if std::env::var("BRIDGE_MOCK_PROVE").ok().as_deref() == Some("1") {
+        let k = keys::circuit_k();
+        info!("BRIDGE_MOCK_PROVE=1: running MockProver at k={} (this can take minutes)...", k);
+        let t = std::time::Instant::now();
+        match MockProver::run(k, &circuit, vec![instances.clone()]) {
+            Ok(prover) => match prover.verify() {
+                Ok(()) => info!("MockProver verify OK ({:?})", t.elapsed()),
+                Err(failures) => {
+                    warn!(
+                        "MockProver verify FAILED ({:?}): {} failure(s)",
+                        t.elapsed(),
+                        failures.len()
+                    );
+                    for (i, f) in failures.iter().take(10).enumerate() {
+                        warn!("  failure[{}]: {:?}", i, f);
+                    }
+                    if failures.len() > 10 {
+                        warn!("  ... ({} more failures suppressed)", failures.len() - 10);
+                    }
+                }
+            },
+            Err(e) => warn!("MockProver::run errored: {:?}", e),
+        }
+    }
+
     let instance_refs: &[&[Fr]] = &[&instances];
     let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(vec![]);
     create_proof::<

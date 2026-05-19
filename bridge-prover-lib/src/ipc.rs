@@ -12,11 +12,29 @@ use serde::{Deserialize, Serialize};
 
 const PROOFS_DIR: &str = "proofs";
 
+/// Current `ProofRequest` schema version. Bumped to 2 when `block_height` was
+/// added; the verifier rejects mismatched versions instead of silently
+/// re-interpreting fields.
+pub const PROOF_REQUEST_SCHEMA_VERSION: u32 = 2;
+
+fn default_schema_version() -> u32 { PROOF_REQUEST_SCHEMA_VERSION }
+
 /// JSON structure for combined proof files (Circuit 1a + Circuit 2).
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProofRequest {
+    /// Wire-format version. v2 added `block_height`. Older (v1) files
+    /// implicitly map to `schema_version = 1` via `#[serde(default = ...)]`
+    /// but only after they're shaped to fit — see `read_proof_request`.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+
     /// Key block sequence number.
     pub block_seq_no: u32,
+    /// Thread-anchored `BlockHeight.height` of the key block. In Acki Nacki
+    /// `height` resets on thread crossings, so it is NOT interchangeable with
+    /// `block_seq_no` in multi-thread chains. This is the value the contract
+    /// mirror's per-layer `heights[W]` slot stores.
+    pub block_height: u64,
     /// Sequence number of the previously proved key block.
     pub last_seen_block_seqno: u32,
     /// Block ID from Circuit 1a (attestation) as hex Fr.
@@ -86,12 +104,25 @@ pub async fn wait_for_result(seq_no: u32, timeout: Duration) -> anyhow::Result<V
     }
 }
 
-/// Read a proof request file (used by verifier).
+/// Read a proof request file (used by verifier). Rejects schema versions the
+/// daemon was not built for — a mismatch almost certainly means the prover
+/// and verifier are on different commits, which would silently mis-mirror
+/// state if we just re-interpreted fields.
 pub fn read_proof_request(seq_no: u32) -> anyhow::Result<ProofRequest> {
     let path = proof_file_path(seq_no);
     let data = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read proof file: {}", path))?;
-    serde_json::from_str(&data).context("failed to parse proof request JSON")
+    let req: ProofRequest = serde_json::from_str(&data)
+        .context("failed to parse proof request JSON")?;
+    if req.schema_version != PROOF_REQUEST_SCHEMA_VERSION {
+        anyhow::bail!(
+            "proof file {} has schema_version={} but verifier expects {}",
+            path,
+            req.schema_version,
+            PROOF_REQUEST_SCHEMA_VERSION
+        );
+    }
+    Ok(req)
 }
 
 /// Write a verification result (used by verifier).

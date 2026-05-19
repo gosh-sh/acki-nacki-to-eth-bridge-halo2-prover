@@ -4,10 +4,13 @@
 //! Verifies both proofs, cross-references public instances, updates state.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tracing::{error, info, warn};
 
+use bridge_prover_lib::bootstrap::{self, BootstrapSeed};
 use bridge_prover_lib::bridge_state::BridgeState;
 use bridge_prover_lib::ipc;
 use bridge_prover_lib::keys::KeyManager;
@@ -20,10 +23,16 @@ use halo2_base::halo2_proofs::halo2curves::group::ff::PrimeField;
 
 const PARAMS_DIR: &str = "./params";
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
-const MAX_IDLE_WAIT: Duration = Duration::from_secs(600);
+/// How often to log a heartbeat summary while the loop is running.
+const STATS_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const STATE_FILE: &str = "./state/verifier_state.json";
 const GQL_ENDPOINT: &str = "http://localhost/graphql";
 const BK_SET_CONFIG: &str = "./bk_set.json";
+
+// History window size — must match the prover daemon and the node. Sourced
+// from node-block-client so it can never drift.
+const HISTORY_WINDOW_SIZE: usize =
+    node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE;
 
 #[derive(Default)]
 struct Stats {
@@ -48,6 +57,20 @@ async fn main() -> anyhow::Result<()> {
     ipc::ensure_proofs_dir();
 
     info!("=== Bridge Verifier Daemon (Circuit 1a + Circuit 2) ===");
+    info!("running indefinitely; send SIGINT (Ctrl-C) to shut down cleanly");
+
+    // Graceful-shutdown flag flipped by the Ctrl-C handler. Checked at the top
+    // of each loop iteration so we never tear down mid-verify.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                tracing::info!("Ctrl-C received, shutting down at next safe point...");
+                s.store(true, Ordering::SeqCst);
+            }
+        });
+    }
 
     // 1. Load BK set commitment (for Circuit 1a verification reference).
     let bk_set_commitment = load_bk_set_commitment().await?;
@@ -71,32 +94,96 @@ async fn main() -> anyhow::Result<()> {
     info!("VKs loaded (primary + layer)");
 
     // 3. Load state.
-    let mut state = BridgeState::load(STATE_FILE)?;
+    let mut state = BridgeState::load(STATE_FILE, HISTORY_WINDOW_SIZE)?;
     info!(
         "state loaded: initialized={}, last_key_block={}",
-        state.initialized, state.last_key_block_seqno
+        state.initialized, state.stored_last_seen_block_seq_no
     );
 
+    // 3a. Cold-start bootstrap from the seed file written by the prover.
+    //
+    //     This mirrors the on-chain contract receiving its genesis
+    //     `GlobalHistoryData` via constructor arguments at deployment:
+    //     the prover-as-deployer produces `state/bootstrap_seed.json`, and
+    //     the verifier-as-contract consumes it exactly once. Without this,
+    //     the L1 window's first key block (block 8 on `W=8`) was present
+    //     in the prover state but absent from the verifier — a one-entry
+    //     drift from genesis onward.
+    if !state.initialized {
+        match BootstrapSeed::load(bootstrap::DEFAULT_SEED_PATH)? {
+            Some(seed) => {
+                info!(
+                    "loading bootstrap seed from {}: seqno={}, height={}, layers={}",
+                    bootstrap::DEFAULT_SEED_PATH,
+                    seed.block_seq_no,
+                    seed.block_height,
+                    seed.layer_hashes.len(),
+                );
+                seed.apply(&mut state);
+                state.save(STATE_FILE)?;
+                info!(
+                    "initialized from seed: seqno={}, height={}",
+                    state.stored_last_seen_block_seq_no, state.stored_last_seen_block_height,
+                );
+            }
+            None => {
+                info!(
+                    "no bootstrap seed at {} yet — waiting for prover to write it",
+                    bootstrap::DEFAULT_SEED_PATH,
+                );
+            }
+        }
+    }
+
     // 4. Watch for proof files and verify.
-    let mut last_seen_seqno: u32 = state.last_key_block_seqno;
+    let mut last_seen_seqno: u32 = state.stored_last_seen_block_seq_no as u32;
     let mut bootstrapped = state.initialized;
     let mut stats = Stats::default();
-    let mut last_activity = Instant::now();
     let t_total = Instant::now();
+    let mut last_stats_log = Instant::now();
 
     info!("watching proofs/ directory for incoming proofs...");
 
     loop {
-        // If not bootstrapped, scan for first proof file.
+        if shutdown.load(Ordering::SeqCst) {
+            info!("shutdown flag set, exiting main loop");
+            break;
+        }
+        if last_stats_log.elapsed() >= STATS_LOG_INTERVAL {
+            info!(
+                "[heartbeat] total={}, both_ok={}, primary_only={}, layer_only={}, both_failed={}, uptime={:?}",
+                stats.total_proofs,
+                stats.both_verified_ok,
+                stats.primary_only_ok,
+                stats.layer_only_ok,
+                stats.both_failed,
+                t_total.elapsed()
+            );
+            last_stats_log = Instant::now();
+        }
+
+        // If not bootstrapped, retry loading the seed file. The prover writes
+        // `state/bootstrap_seed.json` on its own cold start; if the verifier
+        // was started first, this is the loop point at which it picks it up.
         if !bootstrapped {
-            if let Some(first_seqno) = scan_for_first_proof() {
-                info!("bootstrapping: found first proof at seq_no={}", first_seqno);
-                let request = ipc::read_proof_request(first_seqno).ok();
-                if let Some(req) = request {
-                    last_seen_seqno = req.last_seen_block_seqno;
-                    info!("setting initial last_seen={} from first proof", last_seen_seqno);
+            match BootstrapSeed::load(bootstrap::DEFAULT_SEED_PATH)? {
+                Some(seed) => {
+                    info!(
+                        "bootstrapping from seed at {}: seqno={}, height={}, layers={}",
+                        bootstrap::DEFAULT_SEED_PATH,
+                        seed.block_seq_no,
+                        seed.block_height,
+                        seed.layer_hashes.len(),
+                    );
+                    seed.apply(&mut state);
+                    state.save(STATE_FILE)?;
+                    last_seen_seqno = state.stored_last_seen_block_seq_no as u32;
+                    bootstrapped = true;
                 }
-                bootstrapped = true;
+                None => {
+                    // Seed file not yet written. Stay idle and try again on the
+                    // next tick — sleep below covers the wait.
+                }
             }
         }
 
@@ -105,7 +192,6 @@ async fn main() -> anyhow::Result<()> {
         let next_proof = find_next_proof_file(last_seen_seqno);
 
         if let Some(next_seqno) = next_proof {
-            last_activity = Instant::now();
             info!("found proof for key block {}", next_seqno);
 
             let request = match ipc::read_proof_request(next_seqno) {
@@ -280,26 +366,56 @@ async fn main() -> anyhow::Result<()> {
                 stats.both_verified_ok += 1;
                 info!("block {}: BOTH VERIFIED OK", next_seqno);
 
-                // Update verifier state.
-                let new_layer_hashes: Vec<([u8; 32], u8)> = request.layer_hash_frs_hex
-                    .iter()
-                    .enumerate()
-                    .take(request.num_layers as usize)
-                    .map(|(i, hex_str)| {
-                        let fr = ipc::fr_from_hex(hex_str).unwrap_or(Fr::zero());
-                        let bytes: [u8; 32] = fr.to_repr();
-                        (bytes, (i + 1) as u8)
-                    })
-                    .collect();
-                let bk_hash_bytes: [u8; 32] = bk_set_hash_fr.to_repr();
-                let block_id_bytes: [u8; 32] = block_id_fr.to_repr();
-                state.update(
-                    &new_layer_hashes,
-                    next_seqno,
-                    block_id_bytes,
-                    bk_hash_bytes,
-                );
-                state.save(STATE_FILE)?;
+                // ---- Tightened append-bundle semantics ----
+                // 1. Refuse to rewind: only append when this block is strictly
+                //    newer than what's already mirrored. The contract enforces
+                //    the same monotonicity; the verifier daemon mirrors it.
+                let next_seq_u64 = next_seqno as u64;
+                if state.initialized
+                    && next_seq_u64 <= state.stored_last_seen_block_seq_no
+                {
+                    warn!(
+                        "block {}: refusing to append non-monotone bundle \
+                         (stored_last_seen={}); state left unchanged",
+                        next_seqno, state.stored_last_seen_block_seq_no
+                    );
+                } else {
+                    // 2. Pull only the first `num_layers` slots from the
+                    //    proof request and drop any all-zero entries — those
+                    //    represent layers the prover left unset.
+                    let new_layer_hashes: Vec<([u8; 32], u8)> = request.layer_hash_frs_hex
+                        .iter()
+                        .take(request.num_layers as usize)
+                        .enumerate()
+                        .filter_map(|(i, hex_str)| {
+                            let fr = ipc::fr_from_hex(hex_str).unwrap_or(Fr::zero());
+                            let bytes: [u8; 32] = fr.to_repr();
+                            if bytes == [0u8; 32] {
+                                None
+                            } else {
+                                Some((bytes, (i + 1) as u8))
+                            }
+                        })
+                        .collect();
+                    let bk_hash_bytes: [u8; 32] = bk_set_hash_fr.to_repr();
+                    // `block_height` is the thread-anchored height from the
+                    // node's envelope (carried in `ProofRequest` v2). In
+                    // multi-thread Acki Nacki this resets across thread
+                    // crossings, so it is NOT the same as `block_seq_no` —
+                    // mirroring it explicitly is what keeps `heights[W]`
+                    // aligned with the contract's per-layer rolling window.
+                    state.append_bundle(
+                        &new_layer_hashes,
+                        request.block_height,
+                        next_seq_u64,
+                        bk_hash_bytes,
+                    );
+                    state.save(STATE_FILE)?;
+                }
+                // block_id_fr is informational only in v2 state — no longer
+                // stored (the contract mirror tracks per-layer rolling windows,
+                // not the latest block_id).
+                let _ = block_id_fr;
             } else if primary_verified {
                 stats.primary_only_ok += 1;
             } else if layer_verified {
@@ -311,11 +427,8 @@ async fn main() -> anyhow::Result<()> {
 
             last_seen_seqno = next_seqno;
         } else {
-            // No new proof yet.
-            if last_activity.elapsed() > MAX_IDLE_WAIT {
-                info!("no new proofs for {:?}, shutting down", MAX_IDLE_WAIT);
-                break;
-            }
+            // No new proof yet — keep polling. Idle-shutdown was removed; the
+            // verifier now mirrors the contract and runs forever until SIGINT.
             tokio::time::sleep(POLL_INTERVAL).await;
         }
     }
@@ -377,25 +490,6 @@ fn find_next_proof_file(last_seen: u32) -> Option<u32> {
         .collect();
     candidates.sort();
     candidates.first().copied()
-}
-
-/// Scan for the first proof file.
-fn scan_for_first_proof() -> Option<u32> {
-    let dir = std::fs::read_dir("proofs").ok()?;
-    let mut proof_seqnos: Vec<u32> = dir
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name.starts_with("proof_") && name.ends_with(".json") {
-                let num_str = name.trim_start_matches("proof_").trim_end_matches(".json");
-                num_str.parse::<u32>().ok()
-            } else {
-                None
-            }
-        })
-        .collect();
-    proof_seqnos.sort();
-    proof_seqnos.first().copied()
 }
 
 fn write_failure(seq_no: u32, error: &str) {

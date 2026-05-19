@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "account-state"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "aerospike",
  "anyhow",
@@ -196,7 +196,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-serialize",
- "ark-std 0.4.0",
+ "ark-std",
 ]
 
 [[package]]
@@ -207,7 +207,7 @@ checksum = "a22f4561524cd949590d78d7d4c5df8f592430d221f7f3c9497bbafd8972120f"
 dependencies = [
  "ark-ec",
  "ark-ff",
- "ark-std 0.4.0",
+ "ark-std",
 ]
 
 [[package]]
@@ -222,7 +222,7 @@ dependencies = [
  "ark-relations",
  "ark-serialize",
  "ark-snark",
- "ark-std 0.4.0",
+ "ark-std",
  "blake2",
  "derivative",
  "digest 0.10.7",
@@ -239,7 +239,7 @@ dependencies = [
  "ark-ff",
  "ark-poly",
  "ark-serialize",
- "ark-std 0.4.0",
+ "ark-std",
  "derivative",
  "hashbrown 0.13.2",
  "itertools 0.10.5",
@@ -256,7 +256,7 @@ dependencies = [
  "ark-ff-asm",
  "ark-ff-macros",
  "ark-serialize",
- "ark-std 0.4.0",
+ "ark-std",
  "derivative",
  "digest 0.10.7",
  "itertools 0.10.5",
@@ -302,7 +302,7 @@ dependencies = [
  "ark-poly",
  "ark-relations",
  "ark-serialize",
- "ark-std 0.4.0",
+ "ark-std",
 ]
 
 [[package]]
@@ -313,7 +313,7 @@ checksum = "d320bfc44ee185d899ccbadfa8bc31aab923ce1558716e1997a1e74057fe86bf"
 dependencies = [
  "ark-ff",
  "ark-serialize",
- "ark-std 0.4.0",
+ "ark-std",
  "derivative",
  "hashbrown 0.13.2",
 ]
@@ -327,7 +327,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-relations",
- "ark-std 0.4.0",
+ "ark-std",
  "derivative",
  "num-bigint 0.4.6",
  "num-integer",
@@ -342,7 +342,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00796b6efc05a3f48225e59cb6a2cda78881e7c390872d5786aaf112f31fb4f0"
 dependencies = [
  "ark-ff",
- "ark-std 0.4.0",
+ "ark-std",
  "tracing",
  "tracing-subscriber 0.2.25",
 ]
@@ -355,7 +355,7 @@ checksum = "3975a01b0a6e3eae0f72ec7ca8598a6620fc72fa5981f6f5cca33b7cd788f633"
 dependencies = [
  "ark-ec",
  "ark-ff",
- "ark-std 0.4.0",
+ "ark-std",
 ]
 
 [[package]]
@@ -365,7 +365,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb7b85a02b83d2f22f89bd5cac66c9c89474240cb6207cb1efc16d098e822a5"
 dependencies = [
  "ark-serialize-derive",
- "ark-std 0.4.0",
+ "ark-std",
  "digest 0.10.7",
  "num-bigint 0.4.6",
 ]
@@ -390,18 +390,7 @@ dependencies = [
  "ark-ff",
  "ark-relations",
  "ark-serialize",
- "ark-std 0.4.0",
-]
-
-[[package]]
-name = "ark-std"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1df2c09229cbc5a028b1d70e00fdb2acee28b1055dfb5ca73eea49c5a25c4e7c"
-dependencies = [
- "colored",
- "num-traits",
- "rand 0.8.6",
+ "ark-std",
 ]
 
 [[package]]
@@ -441,7 +430,7 @@ dependencies = [
  "bridge-poseidon",
  "gosh-bls-verification",
  "gosh-sha256-chip",
- "halo2-base 0.4.0",
+ "halo2-base",
  "halo2-ecc",
  "num-bigint 0.4.6",
  "pse-poseidon",
@@ -763,7 +752,7 @@ version = "0.1.0"
 source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#ff51a47ab845ce4e6089b5a93f746ede1662ca66"
 dependencies = [
  "gosh-bls-verification",
- "halo2-base 0.4.0",
+ "halo2-base",
  "num-bigint 0.4.6",
  "pse-poseidon",
 ]
@@ -776,7 +765,7 @@ dependencies = [
  "bincode",
  "bridge-prover-lib",
  "gosh-dense-balanced-tree",
- "halo2-base 0.4.0",
+ "halo2-base",
  "hex",
  "node-block-client",
  "serde",
@@ -803,7 +792,7 @@ dependencies = [
  "gosh-dense-balanced-tree",
  "gosh-sha256-chip",
  "gosh-zk-snark-halo2-utils",
- "halo2-base 0.4.0",
+ "halo2-base",
  "halo2-ecc",
  "hex",
  "historical-layer-hashes-movement-checker-circuit",
@@ -830,7 +819,7 @@ dependencies = [
  "bridge-poseidon",
  "gosh-dense-balanced-tree",
  "gosh_blst",
- "halo2-base 0.4.0",
+ "halo2-base",
  "hex",
  "rand 0.8.6",
  "serde",
@@ -844,8 +833,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bridge-prover-lib",
- "halo2-base 0.4.0",
+ "halo2-base",
  "hex",
+ "node-block-client",
  "serde",
  "serde_json",
  "tokio",
@@ -1035,16 +1025,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "colored"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
-dependencies = [
- "lazy_static",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1486,7 +1466,7 @@ dependencies = [
 [[package]]
 name = "derive_setters"
 version = "0.1.6"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -2002,7 +1982,7 @@ name = "gosh-bls-verification"
 version = "0.1.0"
 source = "git+https://github.com/gosh-sh/gosh-halo2-crypto-lib?branch=main#9a917fe0a6a5e04cd6b6affb3d93e19399ff5ae7"
 dependencies = [
- "halo2-base 0.4.0",
+ "halo2-base",
  "halo2-ecc",
  "sha2 0.10.9",
 ]
@@ -2012,7 +1992,7 @@ name = "gosh-dense-balanced-tree"
 version = "0.1.0"
 source = "git+https://github.com/gosh-sh/gosh-halo2-crypto-lib?branch=main#9a917fe0a6a5e04cd6b6affb3d93e19399ff5ae7"
 dependencies = [
- "halo2-base 0.4.0",
+ "halo2-base",
  "pse-poseidon",
 ]
 
@@ -2021,7 +2001,7 @@ name = "gosh-sha256-chip"
 version = "0.1.0"
 source = "git+https://github.com/gosh-sh/gosh-halo2-crypto-lib?branch=main#9a917fe0a6a5e04cd6b6affb3d93e19399ff5ae7"
 dependencies = [
- "halo2-base 0.4.0",
+ "halo2-base",
  "halo2-ecc",
  "sha2 0.10.9",
 ]
@@ -2031,7 +2011,7 @@ name = "gosh-zk-snark-halo2-utils"
 version = "0.1.0"
 source = "git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=main#9db7cb3fbc285f25d79995a0665587c1b0dd905e"
 dependencies = [
- "halo2-base 0.4.0",
+ "halo2-base",
  "rand 0.8.6",
  "serde",
  "serde_json",
@@ -2099,63 +2079,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "halo2-axiom"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0aee3f8178b78275038e5ea0e2577140056d2c4c87fccaf6777dc0a8eebe455a"
-dependencies = [
- "blake2b_simd",
- "crossbeam 0.8.4",
- "ff",
- "group",
- "halo2curves-axiom",
- "itertools 0.11.0",
- "maybe-rayon",
- "pairing",
- "rand 0.8.6",
- "rand_core 0.6.4",
- "rayon",
- "rustc-hash 1.1.0",
- "sha3",
- "tracing",
-]
-
-[[package]]
 name = "halo2-base"
 version = "0.4.0"
 source = "git+https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381?branch=main#2b6576dea20639706b0c11464a565d36bcde367c"
 dependencies = [
  "getset",
- "halo2-axiom 0.4.5",
+ "halo2-axiom",
  "itertools 0.11.0",
  "log",
  "num-bigint 0.4.6",
  "num-integer",
  "num-traits",
- "poseidon-primitives 0.1.1",
- "rand_chacha 0.3.1",
- "rayon",
- "rustc-hash 1.1.0",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "halo2-base"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab57020fceb5657e837836ab89ee87a5e8d5f1e1662a353e23c00f2cde41446f"
-dependencies = [
- "ark-std 0.3.0",
- "getset",
- "halo2-axiom 0.5.1",
- "itertools 0.11.0",
- "log",
- "num-bigint 0.4.6",
- "num-integer",
- "num-traits",
- "poseidon-primitives 0.2.0",
- "rand 0.8.6",
+ "poseidon-primitives",
  "rand_chacha 0.3.1",
  "rayon",
  "rustc-hash 1.1.0",
@@ -2168,7 +2103,7 @@ name = "halo2-ecc"
 version = "0.4.0"
 source = "git+https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381?branch=main#2b6576dea20639706b0c11464a565d36bcde367c"
 dependencies = [
- "halo2-base 0.4.0",
+ "halo2-base",
  "itertools 0.10.5",
  "num-bigint 0.4.6",
  "num-integer",
@@ -2270,7 +2205,7 @@ source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits
 dependencies = [
  "gosh-dense-balanced-tree",
  "gosh-sha256-chip",
- "halo2-base 0.4.0",
+ "halo2-base",
  "halo2-ecc",
  "pse-poseidon",
 ]
@@ -2840,7 +2775,7 @@ dependencies = [
 [[package]]
 name = "multi-map"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2873,7 +2808,7 @@ dependencies = [
 [[package]]
 name = "node-block-client"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "account-state",
  "anyhow",
@@ -2899,7 +2834,7 @@ dependencies = [
 [[package]]
 name = "node-types"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3331,21 +3266,6 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 name = "poseidon-primitives"
 version = "0.1.1"
 source = "git+https://github.com/gosh-sh/poseidon-primitives?branch=main#fb1450059deb4ae52b0dfdddcb9fdd6767ae1293"
-dependencies = [
- "bitvec",
- "ff",
- "lazy_static",
- "log",
- "rand 0.8.6",
- "rand_xorshift",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "poseidon-primitives"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e4aaeda7a092e21165cc5f0cbc738e72a46f31c03c3cbd87b71ceae9d2d93bc"
 dependencies = [
  "bitvec",
  "ff",
@@ -4867,7 +4787,7 @@ dependencies = [
 [[package]]
 name = "trie-map"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "anyhow",
  "bincode",
@@ -4917,7 +4837,7 @@ dependencies = [
 [[package]]
 name = "tvm_abi"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec#5fe37f8b68be2e3396df274053102f0b3be8ba23"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit#6276f0e7ac862a5f503d6db3ee2a1448244430d4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4954,7 +4874,7 @@ dependencies = [
 [[package]]
 name = "tvm_block"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec#5fe37f8b68be2e3396df274053102f0b3be8ba23"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit#6276f0e7ac862a5f503d6db3ee2a1448244430d4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5004,7 +4924,7 @@ dependencies = [
 [[package]]
 name = "tvm_types"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec#5fe37f8b68be2e3396df274053102f0b3be8ba23"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit#6276f0e7ac862a5f503d6db3ee2a1448244430d4"
 dependencies = [
  "aes",
  "anyhow",
@@ -5048,7 +4968,7 @@ dependencies = [
  "ark-relations",
  "ark-serialize",
  "ark-snark",
- "ark-std 0.4.0",
+ "ark-std",
  "base64 0.13.1",
  "base64ct",
  "bls12_381",
@@ -5063,7 +4983,7 @@ dependencies = [
  "fastcrypto",
  "ff",
  "gosh-zk-snark-halo2-utils",
- "halo2-base 0.4.0",
+ "halo2-base",
  "hex",
  "itertools 0.12.1",
  "lazy_static",
@@ -5097,7 +5017,7 @@ dependencies = [
 [[package]]
 name = "tvm_vm"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec#5fe37f8b68be2e3396df274053102f0b3be8ba23"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit#6276f0e7ac862a5f503d6db3ee2a1448244430d4"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -5110,7 +5030,7 @@ dependencies = [
  "ark-relations",
  "ark-serialize",
  "ark-snark",
- "ark-std 0.4.0",
+ "ark-std",
  "base64ct",
  "bls12_381",
  "byte-slice-cast",
@@ -5121,7 +5041,8 @@ dependencies = [
  "ed25519-dalek",
  "fastcrypto",
  "ff",
- "halo2-base 0.5.1",
+ "gosh-zk-snark-halo2-utils",
+ "halo2-base",
  "hex",
  "itertools 0.13.0",
  "lazy_static",
@@ -5251,7 +5172,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "versioned_struct"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "bincode",
  "serde",
@@ -5261,7 +5182,7 @@ dependencies = [
 [[package]]
 name = "versioned_struct_macro"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=latest_an_to_eth_bridge_test_lightweight#8c54dd7cbc797d91bd589fd7212c893a57e704fb"
+source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "proc-macro2",
  "quote",

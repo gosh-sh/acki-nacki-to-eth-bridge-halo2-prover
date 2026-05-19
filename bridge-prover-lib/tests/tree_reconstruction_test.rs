@@ -39,12 +39,12 @@ fn test_extract_real_block_ids_and_reconstruct() {
     println!();
 
     // Now try to reconstruct the layer 1 tree for block 4.
-    let l1_at_4 = {
-        // Fetch from history_proofs
-        let data = rt.block_on(async { gql.query_block_data_field(4).await.unwrap() });
-        let bd = bridge_prover_lib::block_data_parser::parse_block_data(&data).unwrap();
-        *bd.history_proofs.get(&1).expect("block 4 should have L1")
-    };
+    // Fetch L1 root via the envelope-based helper (legacy `data` field is gone).
+    let l1_at_4 = rt.block_on(async {
+        bridge_prover_lib::real_chain_builder::fetch_layer_root_pub(&gql, 4, 1)
+            .await
+            .expect("block 4 should have L1")
+    });
     println!("L1 root at block 4 (expected tree root): {}", hex::encode(l1_at_4));
 
     // Build block leaves using REAL block_ids from attestations
@@ -165,39 +165,17 @@ fn test_layer1_tree_block_4() {
 }
 
 /// Compute the REAL Acki Nacki block_id (8-leaf SHA-256 Merkle root)
-/// from a block's `data` field.
+/// by fetching the Envelope and reading `identifier()` — same source as
+/// `real_chain_builder::fetch_block_leaf_hash_from_boc`. The legacy `data`
+/// field path (parse_block_data → recompute tree) was removed when GQL
+/// dropped that field; the envelope-resident block_id is authoritative.
 async fn compute_real_block_id(
     gql: &bridge_prover_lib::gql_client::GqlClient,
     seq: u64,
 ) -> anyhow::Result<[u8; 32]> {
-    use bridge_prover_lib::block_data_parser;
-    use bridge_prover_lib::block_id_tree;
-    use sha2::{Digest, Sha256};
-
-    let data_bytes = gql.query_block_data_field(seq).await?;
-    let bd = block_data_parser::parse_block_data(&data_bytes)?;
-
-    let num_layers = bd.history_proofs.len();
-    let mut root_hashes = Vec::with_capacity(10);
-    for i in 1..=10u8 {
-        root_hashes.push(bd.history_proofs.get(&i).copied().unwrap_or([0u8; 32]));
-    }
-    let preimage = block_id_tree::build_layer_hashes_preimage(num_layers, &root_hashes);
-
-    let bk_old = bd.old_bk_set_hash.unwrap_or([0u8; 32]);
-    let bk_new = bd.new_bk_set_hash.unwrap_or([0u8; 32]);
-    let tvm_repr_hash: [u8; 32] = Sha256::digest(&bd.tvm_block_boc).into();
-
-    let tree = block_id_tree::compute_block_id_tree(
-        &preimage,
-        &bd.common_section_bytes,
-        &bk_old,
-        &bk_new,
-        &tvm_repr_hash,
-        &bd.durable_state_bytes,
-        bd.tx_cnt,
-    );
-    Ok(tree.block_id())
+    use node_block_client::BLSSignedEnvelope;
+    let envelope = gql.query_block_envelope(seq).await?;
+    Ok(*envelope.data().identifier().as_array())
 }
 
 /// Definitive test: does bridge_poseidon::poseidon_hash_bytes match
@@ -290,16 +268,18 @@ fn test_live_layer1_tree_with_block_identifier() {
 
     let ext_msg_root = [0u8; 32];
 
-    // Build block leaves for blocks 5-8 using block_identifier and envelope_hash
+    // Build block leaves for blocks 5-8. The AN block_id (8-leaf Merkle root)
+    // is read from the envelope itself — `BlockMetadata.hash` is the TVM
+    // repr_hash, which is NOT the same as the bridge's block_id.
     let mut data_leaves = Vec::new();
     for seq in 5u64..=8 {
-        let meta = rt.block_on(async { gql.query_block_metadata(seq).await.unwrap() });
-        let block_id_hex = meta.block_identifier.as_deref().unwrap_or(&meta.hash);
-        let block_id = hex_to_bytes(block_id_hex);
-        let envelope_hash = hex_to_bytes(&meta.envelope_hash);
-        let leaf = compute_block_leaf_hash(&block_id, &envelope_hash, &ext_msg_root);
+        let envelope = rt.block_on(async { gql.query_block_envelope(seq).await.unwrap() });
+        use node_block_client::BLSSignedEnvelope;
+        let block_id = *envelope.data().identifier().as_array();
+        let envelope_hash_bytes = node_block_client::envelope_hash(&envelope).0;
+        let leaf = compute_block_leaf_hash(&block_id, &envelope_hash_bytes, &ext_msg_root);
         println!("block {}: id={} eh={} leaf={}", seq,
-            &block_id_hex[..16], &meta.envelope_hash[..16], hex::encode(leaf));
+            &hex::encode(block_id)[..16], &hex::encode(envelope_hash_bytes)[..16], hex::encode(leaf));
         data_leaves.push(leaf);
     }
 

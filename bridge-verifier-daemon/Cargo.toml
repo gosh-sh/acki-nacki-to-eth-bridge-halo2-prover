@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 bridge-prover-lib = { workspace = true }
+node-block-client = { workspace = true }
 halo2-base = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -9,6 +9,7 @@ pub mod prover;
 pub mod verifier;
 pub mod ipc;
 pub mod bridge_state;
+pub mod bootstrap;
 pub mod block_id_tree;
 pub mod chain_proof_builder;
 pub mod real_chain_builder;
