@@ -1,0 +1,39 @@
+[package]
+name = "bridge-event-witness-builder"
+version = "0.1.0"
+edition = "2021"
+
+# Track D1 of the Circuit 4 integration plan. A one-shot CLI that enriches a
+# partial `PrivateWitness` JSON (produced by `bridge-event-private-witness-export`)
+# with the three daemon-side fields the per-tx exporter cannot fill in alone:
+#
+#   * `events_tree_proof` — Poseidon Merkle proof from `ext_msg_leaf` to the
+#     block's `ext_out_messages_root`, rebuilt from the node's
+#     `tracked_ext_out_messages` map.
+#   * `block_tree_proof`  — Poseidon Merkle proof from `block_leaf` to the
+#     L1 history-window root (`root_1`), built from the production L1 tree
+#     shape `bridge-prover-lib::real_chain_builder::build_layer1_tree` uses.
+#   * `anchor`            — L1 layer hash + flattened `NUM_LAYER_HASHES`
+#     public vector + `hash_choice_index`, pulled from the verifier's
+#     mirrored `state/verifier_state.json`.
+#
+# Designed to be invoked by the future Python orchestrator
+# (`generate_withdrawals_with_live_event_proving.py`) for each
+# `WithdrawalInitiated` event.
+
+[[bin]]
+name = "bridge-event-witness-builder"
+path = "src/main.rs"
+
+[dependencies]
+bridge-prover-lib = { workspace = true }
+bridge-event-private-witness-export = { path = "../bridge-event-private-witness-export" }
+node-block-client = { workspace = true }
+gosh-dense-balanced-tree = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

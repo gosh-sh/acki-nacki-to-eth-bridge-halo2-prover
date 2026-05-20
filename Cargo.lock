@@ -868,6 +868,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-event-witness-builder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bridge-event-private-witness-export",
+ "bridge-prover-lib",
+ "gosh-dense-balanced-tree",
+ "hex",
+ "node-block-client",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.23",
+]
+
+[[package]]
 name = "bridge-parsers"
 version = "0.1.0"
 source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#ff51a47ab845ce4e6089b5a93f746ede1662ca66"

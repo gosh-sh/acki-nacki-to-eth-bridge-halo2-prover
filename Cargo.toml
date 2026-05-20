@@ -5,6 +5,7 @@ members = [
     "bridge-verifier-daemon",
     "bridge-event-private-witness-export",
     "bridge-event-prove-daemon",
+    "bridge-event-witness-builder",
 ]
 resolver = "2"
 
