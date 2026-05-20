@@ -11,6 +11,8 @@ historical-layer-hashes-movement-checker-circuit = { workspace = true }
 bridge-parsers = { workspace = true }
 bridge-poseidon = { workspace = true }
 bridge-test-data-gen = { workspace = true }
+bridge-event-prove-circuit = { workspace = true }
+bridge-event-private-witness-export = { path = "../bridge-event-private-witness-export" }
 gosh-bls-verification = { workspace = true }
 gosh-dense-balanced-tree = { workspace = true }
 gosh-sha256-chip = { workspace = true }

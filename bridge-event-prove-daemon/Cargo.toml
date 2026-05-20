@@ -1,0 +1,34 @@
+[package]
+name = "bridge-event-prove-daemon"
+version = "0.1.0"
+edition = "2021"
+
+# Track D3 of the Circuit 4 integration plan. A one-shot CLI (dex
+# tooling style, not a long-running daemon) that:
+#   * reads a `PrivateWitness` JSON fixture (or `--selftest` mode that
+#     synthesises one via `test_helpers::build_synthetic_event_keygen_inputs`),
+#   * ensures the event circuit keys exist (keygen on first run),
+#   * generates a Circuit 4 proof,
+#   * self-verifies it,
+#   * prints a JSON summary to stdout (last non-empty line, dex-style),
+#   * optionally writes `proof_event_NNN.json` to `--out-dir`.
+#
+# Designed to be invoked by the future Python orchestrator
+# (`generate_withdrawals_with_live_event_proving.py`) the same way
+# `acki-nacki/tests/dex/generate_vouchers_with_live_event_proving.py`
+# invokes `halo2-proover`.
+
+[[bin]]
+name = "bridge-event-prove"
+path = "src/main.rs"
+
+[dependencies]
+bridge-prover-lib = { workspace = true }
+bridge-event-prove-circuit = { workspace = true }
+halo2-base = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

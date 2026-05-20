@@ -16,6 +16,7 @@ use tracing::info;
 
 use attestation_bls_checker_circuit::primary_circuit::PrimaryAttestationBlsCheckerCircuit;
 use historical_layer_hashes_movement_checker_circuit::circuit::LayerHashesMovementCheckerCircuit;
+use bridge_event_prove_circuit::test_helpers::build_synthetic_event_keygen_inputs;
 
 // ---- Circuit 1a (Primary Attestation) constants ----
 const K: u32 = 20;
@@ -29,6 +30,17 @@ const MAX_SIGNERS: usize = 300;
 const LAYER_K: u32 = 17;
 const LAYER_NUM_UNUSABLE_ROWS: usize = 109;
 const LAYER_LOOKUP_BITS: usize = 16;
+
+// ---- Circuit 4 (Event Prove — WithdrawalInitiated) constants ----
+// EVENT_K matches `bridge-event-prove-circuit::test_helpers::K` and the
+// `k` field of `event_prover::default_event_circuit_params`. SRS at K=20
+// covers this smaller K too.
+const EVENT_K: u32 = 19;
+// Deterministic seed for the synthetic-witness keygen path. Any seed
+// produces the same VK/PK shape since the circuit's constraint system
+// is independent of witness values — we just need *some* constraint-
+// satisfying input to drive `keygen_vk` / `keygen_pk`.
+const EVENT_KEYGEN_SEED: u64 = 0xE5E5_E5E5_E5E5_E5E5;
 
 const SERDE_FMT: SerdeFormat = SerdeFormat::RawBytesUnchecked;
 
@@ -44,6 +56,10 @@ pub struct KeyManager {
     pub layer_vk: Option<VerifyingKey<G1Affine>>,
     pub layer_pk: Option<ProvingKey<G1Affine>>,
     pub layer_config: Option<BaseCircuitParams>,
+    // Circuit 4 (Event Prove — WithdrawalInitiated)
+    pub event_vk: Option<VerifyingKey<G1Affine>>,
+    pub event_pk: Option<ProvingKey<G1Affine>>,
+    pub event_config: Option<BaseCircuitParams>,
 }
 
 impl KeyManager {
@@ -70,6 +86,9 @@ impl KeyManager {
             layer_vk: None,
             layer_pk: None,
             layer_config: None,
+            event_vk: None,
+            event_pk: None,
+            event_config: None,
         };
 
         // Try loading cached primary VK and config (PK loaded on demand).
@@ -96,6 +115,19 @@ impl KeyManager {
                 info!("layer PK found on disk (will load on demand)");
             }
             mgr.layer_config = Some(config);
+        }
+
+        // Try loading cached event VK and config (PK loaded on demand).
+        if let Ok(config) = mgr.load_config("event") {
+            info!("found event config: {:?}", config);
+            if let Some(vk) = mgr.try_load_vk("event", &config) {
+                info!("loaded event VK from cache");
+                mgr.event_vk = Some(vk);
+            }
+            if mgr.pk_path("event").exists() {
+                info!("event PK found on disk (will load on demand)");
+            }
+            mgr.event_config = Some(config);
         }
 
         mgr
@@ -280,6 +312,65 @@ impl KeyManager {
         LAYER_LOOKUP_BITS
     }
 
+    // ---- Circuit 4 (Event Prove — WithdrawalInitiated) ----
+
+    /// Ensure event circuit keys exist on disk. Runs keygen if not cached.
+    /// Does NOT keep the PK in memory — call `load_event_pk()` before proof generation.
+    ///
+    /// Keygen uses the deterministic synthetic-witness path exposed by
+    /// `bridge-event-prove-circuit::test_helpers::build_synthetic_event_keygen_inputs`,
+    /// which composes the embedded `withdrawals.txt` first record + a random
+    /// two-level tree + a T=1 dense chain + planted layer hashes. The
+    /// produced circuit's constraint system is independent of these witness
+    /// values, so the VK/PK shape is stable across machines and CI runs.
+    pub fn ensure_event_keys(&mut self) -> anyhow::Result<()> {
+        if self.event_vk.is_some() && self.pk_path("event").exists() {
+            info!("event keys already available (VK in memory, PK on disk)");
+            return Ok(());
+        }
+
+        info!("running keygen for event circuit (this may take a while)...");
+
+        let (circuit, _instances) = build_synthetic_event_keygen_inputs(EVENT_KEYGEN_SEED);
+        let base_params = circuit.base_circuit_params.clone();
+        info!("event base_circuit_params: {:?}", base_params);
+
+        let t = std::time::Instant::now();
+        let vk = keygen_vk(&self.srs, &circuit).context("event keygen_vk failed")?;
+        info!("event keygen_vk: {:?}", t.elapsed());
+
+        let t = std::time::Instant::now();
+        let pk = keygen_pk(&self.srs, vk.clone(), &circuit).context("event keygen_pk failed")?;
+        info!("event keygen_pk: {:?}", t.elapsed());
+
+        self.save_vk("event", &vk)?;
+        self.save_pk("event", &pk)?;
+        self.save_config("event", &base_params)?;
+
+        self.event_vk = Some(vk);
+        // PK intentionally NOT kept in memory — saved to disk, will load on demand.
+        self.event_config = Some(base_params);
+
+        info!("event keys generated and cached (PK on disk, not in memory)");
+        Ok(())
+    }
+
+    pub fn event_vk(&self) -> &VerifyingKey<G1Affine> {
+        self.event_vk.as_ref().expect("event VK not loaded")
+    }
+
+    pub fn event_pk(&self) -> &ProvingKey<G1Affine> {
+        self.event_pk.as_ref().expect("event PK not loaded")
+    }
+
+    pub fn event_config(&self) -> &BaseCircuitParams {
+        self.event_config.as_ref().expect("event config not loaded")
+    }
+
+    pub fn event_k(&self) -> usize {
+        EVENT_K as usize
+    }
+
     // ---- On-demand PK loading (memory management) ----
 
     /// Load primary PK from disk into memory. Call before generating Circuit 1a proofs.
@@ -327,6 +418,30 @@ impl KeyManager {
         if self.layer_pk.is_some() {
             self.layer_pk = None;
             info!("layer PK unloaded from memory");
+        }
+    }
+
+    /// Load event PK from disk into memory. Call before generating Circuit 4 proofs.
+    pub fn load_event_pk(&mut self) -> anyhow::Result<()> {
+        if self.event_pk.is_some() {
+            return Ok(());
+        }
+        let config = self.event_config.as_ref()
+            .ok_or_else(|| anyhow::format_err!("event config not loaded — run ensure_event_keys first"))?;
+        info!("loading event PK from disk...");
+        let t = std::time::Instant::now();
+        let pk = self.try_load_pk("event", config)
+            .ok_or_else(|| anyhow::format_err!("failed to load event PK from {}", self.pk_path("event").display()))?;
+        info!("event PK loaded in {:?}", t.elapsed());
+        self.event_pk = Some(pk);
+        Ok(())
+    }
+
+    /// Unload event PK from memory. Call after generating Circuit 4 proofs.
+    pub fn unload_event_pk(&mut self) {
+        if self.event_pk.is_some() {
+            self.event_pk = None;
+            info!("event PK unloaded from memory");
         }
     }
 
