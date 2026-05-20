@@ -20,6 +20,7 @@ use anyhow::Context;
 use tracing::{error, info, warn};
 
 use bridge_prover_lib::Fr;
+use bridge_prover_lib::THINNING_FACTOR_P;
 use halo2_base::halo2_proofs::halo2curves::group::ff::PrimeField;
 
 use bridge_prover_lib::attestation_fetcher;
@@ -76,7 +77,9 @@ async fn main() -> anyhow::Result<()> {
 
     info!("=== Bridge Prover Daemon (Circuit 1a + Circuit 2) ===");
     info!("GQL endpoint: {}", GQL_ENDPOINT);
-    info!("history window size: {}", HISTORY_WINDOW_SIZE);
+    info!("history window size: W = {}", HISTORY_WINDOW_SIZE);
+    info!("thinning factor:     P = {} (prove every {}-th key block, bundle = {} blocks)",
+          THINNING_FACTOR_P, THINNING_FACTOR_P, HISTORY_WINDOW_SIZE * THINNING_FACTOR_P);
     info!("running indefinitely; send SIGINT (Ctrl-C) to shut down cleanly");
 
     // Graceful-shutdown flag flipped by the Ctrl-C handler. Checked at the top
@@ -189,11 +192,13 @@ async fn main() -> anyhow::Result<()> {
         let blocks = gql.query_latest_blocks(5).await?;
         let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
 
-        // Find next key block to process.
-        let next_key_seqno = find_next_key_block(
+        // Find next thinned key block to process (advances by W * P, not W —
+        // see bridge_prover_lib::THINNING_FACTOR_P).
+        let next_key_seqno = find_next_thinned_key_block(
             state.stored_last_seen_block_seq_no,
             latest_seq,
             HISTORY_WINDOW_SIZE,
+            THINNING_FACTOR_P,
         );
 
         if next_key_seqno.is_none() {
@@ -411,32 +416,27 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Find the next key block to process after last_key_seqno.
-fn find_next_key_block(
+/// Find the next *thinned* key block to process after `last_key_seqno`.
+///
+/// The daemon advances in steps of `W * P` blocks: it proves only every
+/// `P`-th master key block, with each Circuit 2 bundle internally chaining
+/// `P` consecutive layer-1 windows via `verify_chain_of_dense_proofs`.
+/// The bootstrap step is at `seq = W` (a single W-aligned root applied by
+/// the bootstrap seed); from there the first thinned target is `W*P`, then
+/// `2*W*P`, etc.
+fn find_next_thinned_key_block(
     last_key_seqno: u64,
     latest_seqno: u64,
     window_size: u64,
+    thinning_factor: u64,
 ) -> Option<u64> {
-    // Next key block is at next multiple of window_size after last_key_seqno.
-    let next = if last_key_seqno == 0 {
-        window_size
-    } else {
-        last_key_seqno + window_size
-    };
-
+    let step = window_size * thinning_factor;
+    // Next multiple of `step` strictly greater than `last_key_seqno`.
+    // Works for both bootstrap (`last == window_size`) and steady state
+    // (`last == k * step`).
+    let next = ((last_key_seqno / step) + 1) * step;
     if next <= latest_seqno {
-        // Ensure it's actually a key block height.
-        if next % window_size == 0 {
-            Some(next)
-        } else {
-            // Align to next multiple.
-            let aligned = ((next / window_size) + 1) * window_size;
-            if aligned <= latest_seqno {
-                Some(aligned)
-            } else {
-                None
-            }
-        }
+        Some(next)
     } else {
         None
     }

@@ -66,7 +66,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use tracing::{error, info, warn};
 
-use bridge_prover_lib::bridge_state::BridgeState;
+use bridge_prover_lib::bridge_state::{BridgeState, MAX_LAYERS};
 use bridge_prover_lib::chain_proof_builder::{
     build_tree_and_proof, compute_block_leaf_hash, pad_leaves_to_power_of_2,
 };
@@ -83,9 +83,15 @@ use gosh_dense_balanced_tree::{DenseChainLink, MAX_CHAIN_LEN};
 const HISTORY_WINDOW_SIZE: u64 =
     node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE as u64;
 
+/// Prover-side thinning factor `P`. Re-exported from `bridge_prover_lib`
+/// so the witness builder uses the same value as the prover daemon.
+const THINNING_FACTOR_P: u64 = bridge_prover_lib::THINNING_FACTOR_P;
+
 /// `NUM_LAYER_HASHES = MAX_LAYERS * W` — must match the circuit's
-/// compile-time constant. With `MAX_LAYERS = 10` and `W = 8` that's 80.
-const NUM_LAYER_HASHES: usize = 80;
+/// compile-time constant. Derives from `MAX_LAYERS` and the node-side
+/// `HISTORY_PROOF_WINDOW_SIZE` so test/production W switch is a one-line
+/// change in `node-block-client::history_proof`.
+const NUM_LAYER_HASHES: usize = MAX_LAYERS * HISTORY_WINDOW_SIZE as usize;
 
 const DEFAULT_VERIFIER_STATE: &str = "./state/verifier_state.json";
 const DEFAULT_GQL_ENDPOINT: &str = "http://localhost/graphql";
@@ -296,13 +302,38 @@ async fn run() -> Result<()> {
     // Production L1 tree at key block H covers blocks [H - W, ..., H - 1].
     // The unique multiple of W in [event_seq+1, event_seq+W] is the key
     // block whose history_proof[1] is the L1 hash we anchor against.
+    //
+    // With prover thinning (P > 1), the verifier only persists L1 roots
+    // for `(W*P)`-aligned key blocks. Events that fall outside the last
+    // W-window of a thinned bundle cannot anchor against a stored root in
+    // this first cut — they would require a multi-step chain inside
+    // Circuit 4 (see BRIDGE_PROVER_THINNING_SPEC.md §6).
     let w = HISTORY_WINDOW_SIZE;
+    let p = THINNING_FACTOR_P;
     let key_block_seq = ((event_seq / w) * w) + w;
+    let thinned_key_block_seq = ((event_seq / (w * p)) * (w * p)) + (w * p);
+    if key_block_seq != thinned_key_block_seq {
+        bail!(
+            "event at seq_no {event_seq} falls in W-window ending at key block \
+             {key_block_seq}, but with thinning_factor P={p} the verifier only \
+             stores L1 roots at (W*P)={}-aligned key blocks (next one: {}). \
+             Re-time the event so it lands in the last W={} blocks of a thinned \
+             bundle (i.e. event_seq ∈ [{}..{})). \
+             Multi-step in-circuit chaining is tracked in \
+             BRIDGE_PROVER_THINNING_SPEC.md §6.",
+            w * p,
+            thinned_key_block_seq,
+            w,
+            thinned_key_block_seq - w,
+            thinned_key_block_seq,
+        );
+    }
     let window_start = key_block_seq - w;
     let block_offset_in_window = event_seq - window_start;
     info!(
-        "key_block_seq={}, window=[{}..{}), block_offset_in_window={}",
+        "key_block_seq={} (thinned, W*P={}-aligned), window=[{}..{}), block_offset_in_window={}",
         key_block_seq,
+        w * p,
         window_start,
         key_block_seq,
         block_offset_in_window,

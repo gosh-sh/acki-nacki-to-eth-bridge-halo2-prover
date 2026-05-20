@@ -58,5 +58,12 @@ bridge-prover-lib = { path = "bridge-prover-lib" }
 [patch.crates-io]
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main" }
 
+# Local override so the daemons pick up the current W in
+# acki-nacki/node/libs/node-block-client/src/history_proof.rs without needing
+# to push to the shared branch. Currently W=8 (test config). Revert this block
+# when the W change is merged into the shared `test_bridge_poseidon_dex` branch.
+[patch."https://github.com/gosh-sh/acki-nacki.git"]
+node-block-client = { path = "../acki-nacki/node/libs/node-block-client" }
+
 [profile.dev]
 opt-level = 3

@@ -5,7 +5,6 @@ version = 4
 [[package]]
 name = "account-state"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "aerospike",
  "anyhow",
@@ -1672,7 +1671,6 @@ dependencies = [
 [[package]]
 name = "derive_setters"
 version = "0.1.6"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -3074,7 +3072,6 @@ dependencies = [
 [[package]]
 name = "multi-map"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "anyhow",
  "bincode",
@@ -3107,7 +3104,6 @@ dependencies = [
 [[package]]
 name = "node-block-client"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "account-state",
  "anyhow",
@@ -3133,7 +3129,6 @@ dependencies = [
 [[package]]
 name = "node-types"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "anyhow",
  "blake3",
@@ -5113,7 +5108,6 @@ dependencies = [
 [[package]]
 name = "trie-map"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5679,7 +5673,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "versioned_struct"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "bincode",
  "serde",
@@ -5689,7 +5682,6 @@ dependencies = [
 [[package]]
 name = "versioned_struct_macro"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki.git?branch=test_bridge_poseidon_dex#0b7f735534d524464acaa0934ba20c9f1c38ce80"
 dependencies = [
  "proc-macro2",
  "quote",
