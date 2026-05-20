@@ -11,13 +11,16 @@ use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 use bridge_prover_lib::bootstrap::{self, BootstrapSeed};
-use bridge_prover_lib::bridge_state::BridgeState;
+use bridge_prover_lib::bridge_state::{BridgeState, MAX_LAYERS};
+use bridge_prover_lib::event_verifier;
 use bridge_prover_lib::ipc;
 use bridge_prover_lib::keys::KeyManager;
 use bridge_prover_lib::layer_verifier;
 use bridge_prover_lib::poseidon;
 use bridge_prover_lib::verifier;
 use bridge_prover_lib::Fr;
+
+use serde::{Deserialize, Serialize};
 
 use halo2_base::halo2_proofs::halo2curves::group::ff::PrimeField;
 
@@ -42,6 +45,14 @@ struct Stats {
     layer_only_ok: u32,
     both_failed: u32,
     failures: Vec<(u32, String)>,
+    // Event-proof (Circuit 4) counters. Independent seqno space from
+    // primary/layer above (`bridge-event-prove` writes
+    // `proof_event_NNNNNN.json` separately from `proof_NNNNNN.json`).
+    event_total: u32,
+    event_verified_ok: u32,
+    event_anchor_mismatch: u32,
+    event_proof_invalid: u32,
+    event_failures: Vec<(u32, String)>,
 }
 
 #[tokio::main]
@@ -91,7 +102,13 @@ async fn main() -> anyhow::Result<()> {
             PARAMS_DIR
         );
     }
-    info!("VKs loaded (primary + layer)");
+    if key_manager.event_vk.is_none() {
+        anyhow::bail!(
+            "event VK not found in {}. Run the event prover (Circuit 4) first to generate keys.",
+            PARAMS_DIR
+        );
+    }
+    info!("VKs loaded (primary + layer + event)");
 
     // 3. Load state.
     let mut state = BridgeState::load(STATE_FILE, HISTORY_WINDOW_SIZE)?;
@@ -137,12 +154,19 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. Watch for proof files and verify.
     let mut last_seen_seqno: u32 = state.stored_last_seen_block_seq_no as u32;
+    // Event-proof seqno tracker. Independent from `last_seen_seqno` because
+    // `bridge-event-prove` writes `proof_event_NNNNNN.json` with its own
+    // counter (typically 0..N per orchestrator run). Not persisted across
+    // restarts — on restart we re-scan from 0, which means any leftover
+    // `*.result.json` files get rewritten. That is intentional: the daemon
+    // is the source of truth, and re-verification is cheap.
+    let mut last_seen_event_seqno: i64 = -1;
     let mut bootstrapped = state.initialized;
     let mut stats = Stats::default();
     let t_total = Instant::now();
     let mut last_stats_log = Instant::now();
 
-    info!("watching proofs/ directory for incoming proofs...");
+    info!("watching proofs/ directory for incoming proofs (block bundles + event proofs)...");
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -151,12 +175,16 @@ async fn main() -> anyhow::Result<()> {
         }
         if last_stats_log.elapsed() >= STATS_LOG_INTERVAL {
             info!(
-                "[heartbeat] total={}, both_ok={}, primary_only={}, layer_only={}, both_failed={}, uptime={:?}",
+                "[heartbeat] bundles: total={}, both_ok={}, primary_only={}, layer_only={}, both_failed={} | events: total={}, ok={}, anchor_miss={}, invalid={} | uptime={:?}",
                 stats.total_proofs,
                 stats.both_verified_ok,
                 stats.primary_only_ok,
                 stats.layer_only_ok,
                 stats.both_failed,
+                stats.event_total,
+                stats.event_verified_ok,
+                stats.event_anchor_mismatch,
+                stats.event_proof_invalid,
                 t_total.elapsed()
             );
             last_stats_log = Instant::now();
@@ -426,9 +454,16 @@ async fn main() -> anyhow::Result<()> {
             }
 
             last_seen_seqno = next_seqno;
+        } else if let Some(next_event_seqno) =
+            find_next_event_proof_file(last_seen_event_seqno)
+        {
+            info!("found event proof seq_no={}", next_event_seqno);
+            process_event_proof(next_event_seqno, &key_manager, &state, &mut stats);
+            last_seen_event_seqno = next_event_seqno as i64;
         } else {
-            // No new proof yet — keep polling. Idle-shutdown was removed; the
-            // verifier now mirrors the contract and runs forever until SIGINT.
+            // No new proof of either kind — keep polling. Idle-shutdown was
+            // removed; the verifier now mirrors the contract and runs
+            // forever until SIGINT.
             tokio::time::sleep(POLL_INTERVAL).await;
         }
     }
@@ -446,6 +481,17 @@ async fn main() -> anyhow::Result<()> {
         info!("failures:");
         for (seq_no, err) in &stats.failures {
             info!("  block {}: {}", seq_no, err);
+        }
+    }
+    info!("");
+    info!("event proofs received:  {}", stats.event_total);
+    info!("event verified OK:      {}", stats.event_verified_ok);
+    info!("event anchor mismatch:  {}", stats.event_anchor_mismatch);
+    info!("event proof invalid:    {}", stats.event_proof_invalid);
+    if !stats.event_failures.is_empty() {
+        info!("event failures:");
+        for (seq_no, err) in &stats.event_failures {
+            info!("  event {}: {}", seq_no, err);
         }
     }
 
@@ -501,5 +547,313 @@ fn write_failure(seq_no: u32, error: &str) {
     };
     if let Err(e) = ipc::write_result(&result) {
         error!("failed to write result for block {}: {}", seq_no, e);
+    }
+}
+
+// =====================================================================
+// Circuit 4 (event proof) verification
+// =====================================================================
+//
+// The verifier daemon models the future Ethereum bridge contract. It
+// accepts a Circuit 4 proof only if the 80 layer hashes baked into its
+// public instances match the daemon's *current* mirrored
+// `BridgeState.layer_windows[1..=MAX_LAYERS]` byte-for-byte. This is the
+// same check the contract sketch in
+// `acki-nacki-to-eth-bridge-halo2-circuits/README.md` lines 810-853
+// performs in `submitWithdrawalProof`. No `proven[]` map, no nullifier,
+// no recipient binding — those are documented post-verification TBD.
+
+/// On-disk schema for `proof_event_NNNNNN.json` produced by
+/// `bridge-event-prove`. Kept private (`Deserialize`-only) here so the
+/// daemon does not couple to the prover binary's full output schema.
+#[derive(Deserialize)]
+struct EventProofFile {
+    /// Bumped by the prover whenever the file shape changes; the daemon
+    /// hard-fails on a mismatch so the orchestrator notices the drift.
+    schema_version: u32,
+    seq_no: u32,
+    proof_hex: String,
+    public_instances_hex: Vec<String>,
+    /// Prover-side self-verify outcome — informational; the daemon's own
+    /// verify is the actual acceptance gate.
+    self_verified: bool,
+}
+
+const EVENT_PROOF_INPUT_SCHEMA_VERSION: u32 = 1;
+const EVENT_PROOF_RESULT_SCHEMA_VERSION: u32 = 1;
+
+/// Result written next to the input as `proof_event_NNNNNN.result.json`.
+/// Schema is independent of the input — bump independently if the result
+/// shape evolves.
+#[derive(Serialize)]
+struct EventProofResult<'a> {
+    schema_version: u32,
+    seq_no: u32,
+    /// Final accept/reject. `verified == anchor_matched && proof_valid`.
+    verified: bool,
+    /// Whether the trailing 80 public instances matched the daemon's
+    /// current `flatten_layer_hashes()` snapshot byte-for-byte.
+    anchor_matched: bool,
+    /// Whether the halo2 verifier accepted the proof against the event
+    /// VK and the supplied public instances. Not run if anchor mismatched.
+    proof_valid: bool,
+    /// Prover-side self-verify outcome — passed through for forensics.
+    prover_self_verified: bool,
+    /// Daemon's `stored_last_seen_block_height` at the moment of verify —
+    /// the equivalent of the contract's `storedLastSeenBlockHeight` snapshot.
+    verified_at_block_height: u64,
+    /// Daemon's `stored_last_seen_block_seq_no` at the moment of verify.
+    verified_at_block_seq_no: u64,
+    /// Echo of the public-instance hex passed in, so a downstream consumer
+    /// (the Python orchestrator) can assert exact pass-through.
+    event_public_instances_hex: &'a [String],
+    error: Option<String>,
+}
+
+fn event_result_file_path(seq_no: u32) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("proofs/proof_event_{:06}.result.json", seq_no))
+}
+
+/// Scan `proofs/` for any `proof_event_NNNNNN.json` with seq_no > last_seen.
+/// Returns the lowest unseen seq_no, or `None` if nothing new.
+fn find_next_event_proof_file(last_seen: i64) -> Option<u32> {
+    let dir = match std::fs::read_dir("proofs") {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    let mut candidates: Vec<u32> = dir
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            // Match `proof_event_NNNNNN.json` exactly — NOT
+            // `proof_event_NNNNNN.result.json` (the daemon's own output).
+            if name.starts_with("proof_event_") && name.ends_with(".json")
+                && !name.ends_with(".result.json")
+            {
+                let num_str = name
+                    .trim_start_matches("proof_event_")
+                    .trim_end_matches(".json");
+                num_str.parse::<u32>().ok()
+            } else {
+                None
+            }
+        })
+        .filter(|&seq| (seq as i64) > last_seen)
+        .collect();
+    candidates.sort();
+    candidates.first().copied()
+}
+
+/// Verify a single event proof file and write its `.result.json` sibling.
+/// All failures are non-fatal — they're recorded in `stats` and in the
+/// on-disk result file so the orchestrator can diagnose.
+fn process_event_proof(
+    seq_no: u32,
+    key_manager: &KeyManager,
+    state: &BridgeState,
+    stats: &mut Stats,
+) {
+    stats.event_total += 1;
+    let t_start = Instant::now();
+
+    // ---- Load and parse the input file ----
+    let path = format!("proofs/proof_event_{:06}.json", seq_no);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = format!("read error: {}", e);
+            error!("event {}: {}", seq_no, msg);
+            write_event_failure(seq_no, &[], false, state, &msg);
+            stats.event_proof_invalid += 1;
+            stats.event_failures.push((seq_no, msg));
+            return;
+        }
+    };
+    let file: EventProofFile = match serde_json::from_str(&raw) {
+        Ok(f) => f,
+        Err(e) => {
+            let msg = format!("parse error: {}", e);
+            error!("event {}: {}", seq_no, msg);
+            write_event_failure(seq_no, &[], false, state, &msg);
+            stats.event_proof_invalid += 1;
+            stats.event_failures.push((seq_no, msg));
+            return;
+        }
+    };
+    if file.schema_version != EVENT_PROOF_INPUT_SCHEMA_VERSION {
+        let msg = format!(
+            "schema mismatch: file v{} != daemon v{}",
+            file.schema_version, EVENT_PROOF_INPUT_SCHEMA_VERSION
+        );
+        error!("event {}: {}", seq_no, msg);
+        write_event_failure(seq_no, &file.public_instances_hex, file.self_verified, state, &msg);
+        stats.event_proof_invalid += 1;
+        stats.event_failures.push((seq_no, msg));
+        return;
+    }
+    if file.seq_no != seq_no {
+        warn!(
+            "event {}: file's internal seq_no={} disagrees with filename — using filename",
+            seq_no, file.seq_no
+        );
+    }
+
+    // ---- Decode proof bytes + public instances ----
+    let proof_bytes = match hex::decode(&file.proof_hex) {
+        Ok(b) => b,
+        Err(e) => {
+            let msg = format!("invalid proof_hex: {}", e);
+            error!("event {}: {}", seq_no, msg);
+            write_event_failure(seq_no, &file.public_instances_hex, file.self_verified, state, &msg);
+            stats.event_proof_invalid += 1;
+            stats.event_failures.push((seq_no, msg));
+            return;
+        }
+    };
+
+    // Public instance layout (per `event_verifier.rs`):
+    //   [token_id, dapp_fr, acc_fr, layer_hashes[0..NUM_LAYER_HASHES]]
+    // where NUM_LAYER_HASHES = MAX_LAYERS * window_size (== 80 on W=8).
+    let expected_num_instances = 3 + MAX_LAYERS * state.window_size;
+    if file.public_instances_hex.len() != expected_num_instances {
+        let msg = format!(
+            "expected {} public instances, got {}",
+            expected_num_instances,
+            file.public_instances_hex.len()
+        );
+        error!("event {}: {}", seq_no, msg);
+        write_event_failure(seq_no, &file.public_instances_hex, file.self_verified, state, &msg);
+        stats.event_proof_invalid += 1;
+        stats.event_failures.push((seq_no, msg));
+        return;
+    }
+    let mut instances: Vec<Fr> = Vec::with_capacity(expected_num_instances);
+    for (i, h) in file.public_instances_hex.iter().enumerate() {
+        match ipc::fr_from_hex(h) {
+            Ok(fr) => instances.push(fr),
+            Err(e) => {
+                let msg = format!("instance[{}] decode error: {}", i, e);
+                error!("event {}: {}", seq_no, msg);
+                write_event_failure(seq_no, &file.public_instances_hex, file.self_verified, state, &msg);
+                stats.event_proof_invalid += 1;
+                stats.event_failures.push((seq_no, msg));
+                return;
+            }
+        }
+    }
+
+    // ---- Anchor check (the "current bridge state" gate) ----
+    //
+    // Mirror of the on-chain check at README:991 — "A Circuit 4 proof is
+    // accepted only against the contract's *current* MAX_LAYERS × W layer-
+    // hash array (byte-identical match)". The trailing 80 instances are
+    // compared to `state.flatten_layer_hashes()` slot by slot.
+    let current_hashes = state.flatten_layer_hashes();
+    debug_assert_eq!(current_hashes.len(), MAX_LAYERS * state.window_size);
+    let mut mismatched_slot: Option<usize> = None;
+    for (i, expected_bytes) in current_hashes.iter().enumerate() {
+        let actual_bytes: [u8; 32] = instances[3 + i].to_repr();
+        if actual_bytes != *expected_bytes {
+            mismatched_slot = Some(i);
+            break;
+        }
+    }
+    if let Some(slot) = mismatched_slot {
+        let msg = format!(
+            "anchor mismatch at slot {} — proof was built against a layer-hash array \
+             that does not match the daemon's current state",
+            slot
+        );
+        warn!("event {}: {}", seq_no, msg);
+        let result = EventProofResult {
+            schema_version: EVENT_PROOF_RESULT_SCHEMA_VERSION,
+            seq_no,
+            verified: false,
+            anchor_matched: false,
+            proof_valid: false,
+            prover_self_verified: file.self_verified,
+            verified_at_block_height: state.stored_last_seen_block_height,
+            verified_at_block_seq_no: state.stored_last_seen_block_seq_no,
+            event_public_instances_hex: &file.public_instances_hex,
+            error: Some(msg.clone()),
+        };
+        if let Err(e) = write_event_result(&result) {
+            error!("event {}: failed to write result file: {}", seq_no, e);
+        }
+        stats.event_anchor_mismatch += 1;
+        stats.event_failures.push((seq_no, msg));
+        return;
+    }
+
+    // ---- Cryptographic verification ----
+    let t_verify = Instant::now();
+    let proof_valid = event_verifier::verify_event_proof(key_manager, &proof_bytes, &instances);
+    let verify_elapsed = t_verify.elapsed();
+    info!(
+        "event {}: Circuit 4 {} ({:?}) | total {:?}",
+        seq_no,
+        if proof_valid { "VERIFIED" } else { "FAILED" },
+        verify_elapsed,
+        t_start.elapsed(),
+    );
+
+    let result = EventProofResult {
+        schema_version: EVENT_PROOF_RESULT_SCHEMA_VERSION,
+        seq_no,
+        verified: proof_valid,
+        anchor_matched: true,
+        proof_valid,
+        prover_self_verified: file.self_verified,
+        verified_at_block_height: state.stored_last_seen_block_height,
+        verified_at_block_seq_no: state.stored_last_seen_block_seq_no,
+        event_public_instances_hex: &file.public_instances_hex,
+        error: if proof_valid {
+            None
+        } else {
+            Some("halo2 verify_proof rejected the Circuit 4 proof".to_string())
+        },
+    };
+    if let Err(e) = write_event_result(&result) {
+        error!("event {}: failed to write result file: {}", seq_no, e);
+    }
+
+    if proof_valid {
+        stats.event_verified_ok += 1;
+    } else {
+        stats.event_proof_invalid += 1;
+        stats.event_failures.push((seq_no, "proof rejected".to_string()));
+    }
+}
+
+fn write_event_result(result: &EventProofResult<'_>) -> anyhow::Result<()> {
+    let path = event_result_file_path(result.seq_no);
+    let json = serde_json::to_string_pretty(result)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
+/// Helper used by every early-return path above to emit a uniform failure
+/// result. Keeps the various error branches from diverging in shape.
+fn write_event_failure(
+    seq_no: u32,
+    public_instances_hex: &[String],
+    prover_self_verified: bool,
+    state: &BridgeState,
+    error: &str,
+) {
+    let result = EventProofResult {
+        schema_version: EVENT_PROOF_RESULT_SCHEMA_VERSION,
+        seq_no,
+        verified: false,
+        anchor_matched: false,
+        proof_valid: false,
+        prover_self_verified,
+        verified_at_block_height: state.stored_last_seen_block_height,
+        verified_at_block_seq_no: state.stored_last_seen_block_seq_no,
+        event_public_instances_hex: public_instances_hex,
+        error: Some(error.to_string()),
+    };
+    if let Err(e) = write_event_result(&result) {
+        error!("event {}: failed to write failure result: {}", seq_no, e);
     }
 }
