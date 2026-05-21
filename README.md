@@ -1,38 +1,30 @@
 # Acki Nacki → Ethereum Bridge: Halo2 Prover & Verifier
 
-Off-chain prover and verifier daemons that produce halo2 KZG proofs covering
-**both** sides of the Acki Nacki → Ethereum bridge attestation:
+Off-chain daemons that produce and locally verify the halo2 KZG proofs the
+Ethereum bridge contract consumes. Three circuits are exercised:
 
-1. **Circuit 1a — Primary Attestation (BLS).** Verifies that ≥ ⌈2n/3⌉ validators
-   from the current BK set signed a block attestation, and binds the resulting
-   8-leaf SHA-256 Merkle root (the Acki Nacki `block_id`) to the BK-set
-   Poseidon commitment.
-2. **Circuit 2 — Layer Hashes Movement.** Verifies that the current key
-   block's layer hashes Poseidon preimage hashes to the leaf used in
-   Circuit 1a (`L0`), and that the highest active layer hash chains
-   back to the previously committed `prev_max_level_layer_hash` through a
-   sequence of real Poseidon Merkle proof steps.
+| Circuit | K | Role |
+|---|---|---|
+| 1A — Primary BLS Attestation | 20 | ≥ ⌈2n/3⌉ BLS signers from the current BK set sign a block; binds `block_id` to `bk_set_poseidon`. |
+| 2 — Layer Historical Hashes  | 17 | Open the L0 Poseidon preimage in the `block_id` Merkle tree; advance `GlobalHistoryData` layer windows through a dense Poseidon chain (`MAX_CHAIN_LEN = 11`). |
+| 4 — Bridge Event Prover      | 19 | Hash a `WithdrawalInitiated` event BOC, bind it to a `Poseidon96` block leaf, climb the dense chain, anchor against the contract's `MAX_LAYERS × W` candidate hashes via a **private** index. |
 
-Together they prove: *"this BK set signed a block whose block_id matches a
-block whose history is consistent with everything we have attested to before."*
+Theory, security argument, contract sketch, and per-circuit witness details live in the companion repo: [`acki-nacki-to-eth-bridge-halo2-circuits/README.md`](../acki-nacki-to-eth-bridge-halo2-circuits/README.md). This README covers the **off-chain operation**: daemons, IPC, state, and how to run the full E2E test from this checkout.
 
-The daemons connect to a running Acki Nacki node via GraphQL, deserialize the
-`boc` field as `Envelope<AckiNackiBlock>` (no node-side modifications needed),
-reconstruct real Poseidon trees from intermediate key blocks, and produce SNARK
-proofs that can be verified by a counterpart on Ethereum.
+> **Notation — `W` ≡ `HISTORY_PROOF_WINDOW_SIZE`** (and `P` ≡ `THINNING_FACTOR_P`).
+
+---
 
 ## Table of Contents
 
 - [Architecture](#architecture)
+- [Repository Layout](#repository-layout)
 - [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
+- [E2E Test Runbook](#e2e-test-runbook)
 - [Configuration](#configuration)
-- [Running Both Daemons Together](#running-both-daemons-together)
-- [Output and Results](#output-and-results)
+- [IPC, State, and On-disk Artifacts](#ipc-state-and-on-disk-artifacts)
 - [Performance](#performance)
-- [Evaluating Results](#evaluating-results)
 - [Integration Tests](#integration-tests)
-- [Project Structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -40,546 +32,323 @@ proofs that can be verified by a counterpart on Ethereum.
 ## Architecture
 
 ```
-┌──────────────────────┐
-│  Acki Nacki Node     │
-│  (local Docker)      │
-│                      │
-│  GraphQL ────────────┼──── http://localhost/graphql
-│  • blocks(seq_no)    │     • boc (bincode Envelope<AckiNackiBlock>)
-│  • bkSetUpdates      │     • adds / removes (full history)
-└──────────┬───────────┘
-           │
-           ▼
-┌─────────────────────────┐                                ┌───────────────────────────┐
-│  Prover Daemon          │   proofs/proof_{seqno}.json    │  Verifier Daemon          │
-│                         │ ─────────────────────────────► │                           │
-│  Per key block (every   │                                │  • Reads proof file       │
-│  HISTORY_WINDOW_SIZE    │   proofs/result_{seqno}.json   │  • Recomputes BK Poseidon │
-│  blocks):               │ ◄───────────────────────────── │    commitment             │
-│                         │                                │  • Verifies Circuit 1a    │
-│  1. Fetch block boc     │                                │  • Verifies Circuit 2     │
-│  2. Build attestation   │                                │  • Writes result          │
-│     witness             │                                │  • Tracks last_seen       │
-│  3. Reconstruct real    │                                │  • Updates layer hashes   │
-│     Poseidon trees from │                                │    on success             │
-│     intermediate blocks │                                └───────────────────────────┘
-│  4. Generate Circuit 1a │
-│     proof  (~95 s)      │
-│  5. Generate Circuit 2  │
-│     proof  (~30 s)      │
-│  6. Write proof JSON    │
-│  7. Wait for result     │
-│  8. Persist new layer   │
-│     hashes to state     │
-└─────────────────────────┘
-
-Shared artifacts on disk:
-  params/   — SRS + VK + PK for both circuits (~6.5 GB total, cached)
-  state/    — prover_state.json, verifier_state.json (last_key_block_seqno,
-              max_layers_ever_seen, persisted layer_hashes per layer)
-  proofs/   — proof_{seqno}.json + result_{seqno}.json (file-based IPC)
-  logs/     — daemon stdout/stderr (optional)
+              ┌──────────────────────────┐
+              │  Acki Nacki Node         │
+              │  (5-node Docker compose) │
+              │  http://localhost/graphql│
+              └────────────┬─────────────┘
+                           │ GQL (blocks, bk-set, history-proofs metadata)
+       ┌───────────────────┼────────────────────────────┐
+       ▼                                                ▼
+┌─────────────────────┐                  ┌────────────────────────────┐
+│ bridge-prover       │   proofs/        │ bridge-verifier            │
+│  • Circuit 1A       │ ───────────────► │  • Reads proof_*.json      │
+│  • Circuit 2        │  proof_NNN.json  │  • Verifies 1A + 2         │
+│  • One bundle per   │ ◄─────────────── │  • Advances layerWindows   │
+│    thinned KB       │  result_NNN.json │  • Watches proof_event_*   │
+│    (W·P blocks)     │                  │  • Verifies Circuit 4      │
+└─────────────────────┘                  └────────────────────────────┘
+                           ▲                       ▲
+                           │ proof_event_NNN.json  │
+                           │                       │
+┌──────────────────────────┴────────────────┐      │
+│ Per WithdrawalInitiated event:            │      │
+│   bridge-event-private-witness-export ─►  │      │
+│   bridge-event-witness-builder        ─►  │      │
+│   bridge-event-prove --fixture ...    ────┘      │
+│ (driven by the Python E2E orchestrator)          │
+└──────────────────────────────────────────────────┘
 ```
 
-The two daemons communicate via **file-based IPC** in `proofs/`. The prover
-writes `proofs/proof_{seqno:06}.json`, the verifier picks it up, verifies both
-circuits, and writes `proofs/result_{seqno:06}.json`. The prover blocks on the
-result before advancing to the next key block.
+Both halves of the system are **file-based**: `proofs/proof_NNN.json` is the prover→verifier channel; `proofs/proof_NNN.result.json` (or `result_NNN.json` for block bundles) is the verifier→prover ACK. The verifier daemon's own state (`state/verifier_state.json`) is the off-chain twin of the Ethereum contract's `layerWindows` storage.
 
-**Memory management.** Each PK is large (Circuit 1a ≈ 3.5 GB at K=20,
-Circuit 2 ≈ 2.7 GB at K=17). The prover loads them on demand and unloads
-after each proof, so peak RSS stays around the larger of the two.
+**On-demand PK loading.** Each proving key is ~3 GB. The prover loads one circuit's PK, generates a proof, then unloads before loading the next — peak RSS stays around 14 GB instead of 22+.
+
+---
+
+## Repository Layout
+
+```
+acki-nacki-to-eth-bridge-halo2-prover/
+├── bridge-prover-lib/                     # shared library
+│   └── src/{keys,prover,verifier,layer_prover,layer_verifier,
+│            event_prover,event_verifier,ipc,bridge_state,…}.rs
+├── bridge-prover-daemon/                  # bin "bridge-prover"        (Circuits 1A + 2)
+├── bridge-verifier-daemon/                # bin "bridge-verifier"      (all three circuits)
+├── bridge-event-prove-daemon/             # bin "bridge-event-prove"   (Circuit 4, one-shot)
+├── bridge-event-private-witness-export/   # bin: dump PartialPrivateWitness from a block
+├── bridge-event-witness-builder/          # bin: enrich it via GQL + verifier state
+├── params/   state/   proofs/   logs/     # gitignored; created on demand
+└── .cargo/config.toml                     # --cfg tokio_unstable (required, do not remove)
+```
+
+`THINNING_FACTOR_P` is defined in `bridge-prover-lib/src/lib.rs:35`. `HISTORY_WINDOW_SIZE` is **driven** by the `node-block-client` git dependency's `HISTORY_PROOF_WINDOW_SIZE` — see `bridge-prover-daemon/src/main.rs:42`. Node and prover therefore cannot disagree on `W` at the constant level (but the node Docker image still has to be rebuilt after changing it — see Step 1 below).
 
 ---
 
 ## Prerequisites
 
-- **Rust** nightly (the workspace uses `--cfg tokio_unstable` via
-  `.cargo/config.toml` and `opt-level = 3` in dev profile)
-- **~10 GB free disk** (SRS 128 MB + Circuit 1a PK 3.5 GB + Circuit 2 PK 2.7 GB
-  + state/proofs/logs)
-- **~16 GB RAM** while a proof is being generated
-- **Docker / docker-compose** for the local Acki Nacki node
-- The companion repo [`acki-nacki`](https://github.com/gosh-sh/acki-nacki)
-  cloned locally, on branch **`latest_an_to_eth_bridge_test_lightweight`** with
-  `HISTORY_PROOF_WINDOW_SIZE = 4`
-
-> The prover deserializes `boc` using the `node` and `node-types` crates from
-> branch `latest_an_to_eth_bridge_test_lightweight`. **No GraphQL schema extensions are
-> required** — only the standard `boc` field.
+- **Rust nightly** (release builds).
+- **~10 GB free disk** under `params/` (KZG SRS + three PKs).
+- **~16 GB RAM** during proof generation.
+- **Docker / docker compose** for the local 5-node Acki Nacki cluster.
+- Sibling checkout of [`acki-nacki`](https://github.com/gosh-sh/acki-nacki) with the matching `HISTORY_PROOF_WINDOW_SIZE` (see runbook Step 0).
+- Python 3 + `tvm-cli` on PATH for the orchestrator.
 
 ---
 
-## Quick Start
+## E2E Test Runbook
 
-### 1. Start the local Acki Nacki node
+Drives one full bridge cycle: deploy multisig → emit `WithdrawalInitiated` → wait for thinned key block → build private witness → prove Circuit 4 → verifier ACKs.
+
+### Step 0 — Confirm `W` and `P` agree everywhere
+
+| File | Setting |
+|---|---|
+| `acki-nacki/node/libs/node-block-client/src/history_proof.rs` | `HISTORY_PROOF_WINDOW_SIZE = 128` |
+| `acki-nacki/node/src/types/history_proof.rs` | same |
+| `bridge-prover-lib/src/lib.rs` | `THINNING_FACTOR_P = 4` |
+| `Cargo.toml` | `bridge-event-prove-circuit features = ["w-128"]` |
+| `acki-nacki/tests/exchange/generate_withdrawals_with_live_event_proving.py` | `W = 128, P = 4` |
+
+Changing `W` requires rebuilding the node image **and** re-running Circuit 4 keygen — its VK is `W`-specific. Circuits 1A/2 PKs are `W`-independent.
+
+### Step 1 — Build / refresh the cluster
 
 ```bash
 cd /path/to/acki-nacki
-git checkout latest_an_to_eth_bridge_test_lightweight
-make run
-# Wait ~2 minutes for docker compose build + node startup.
-
-# Sanity-check the GraphQL endpoint:
-curl -s http://localhost/graphql -H "Content-Type: application/json" \
-  -d '{"query":"{ blockchain { blocks(last: 1) { edges { node { seq_no } } } } }"}'
+make run                       # kill + build_node + run_silent
+docker ps                       # expect node{0..4}, q_server0, block_manager, nginx0, aerospike
 ```
 
-Make sure `node/src/types/history_proof.rs` has
-`pub const HISTORY_PROOF_WINDOW_SIZE: usize = 4;` — this **must** match the
-prover's `HISTORY_WINDOW_SIZE`.
+First-ever build: 10–20 min. Incremental rebuilds use the Docker cache.
 
-### 2. Clean state for a fresh test run
+### Step 2 — Wipe stale prover state (keep keys)
 
 ```bash
 cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
-rm -rf proofs/*.json state/*.json logs/*.log
-mkdir -p proofs state logs
+rm -f state/* proofs/proof_*.json proofs/result_*.json \
+      proofs/proof_event_*.json proofs/proof_event_*.result.json
+# Do NOT delete params/ — KZG SRS + PKs/VKs survive across runs.
 ```
 
-### 3. (First run only) Pre-generate keys
+### Step 3 — Generate proving / verifying keys (first run only)
 
-The first run of either daemon will trigger key generation for both circuits.
-You can pre-generate them up front by simply launching the prover first — it
-runs keygen for both circuits before entering its main loop:
+All commands run from the root of **this** repo. Skip files that already exist.
+
+| Circuit | Files produced under `params/` | Command |
+|---|---|---|
+| 1A — Primary Attestation (K=20) | `primary_vk.bin`, `primary_pk.bin` (~3.5 GB) | `cargo run --release --bin bridge-prover` (generates 1A then 2 on first start, ~90 s combined, then keeps running). |
+| 2 — Layer Historical Hashes (K=17) | `layer_vk.bin`, `layer_pk.bin` (~2.7 GB) | same — produced by the `bridge-prover` run above. |
+| 4 — Bridge Event Prover (K=19) | `event_vk.bin`, `event_pk.bin` | `cargo run --release --bin bridge-event-prove -- --selftest` (~5 min). **Must run before** `bridge-verifier` — verifier bails on missing VKs. |
+
+After switching `W` (e.g. `w-8` ↔ `w-128`), delete `params/event_*.bin` and re-run the `--selftest` line.
+
+### Step 4 — Start the daemons
+
+Two terminals (or `run_in_background`):
 
 ```bash
-cargo run --release --bin bridge-prover    # Ctrl-C after keygen if you want
+# Terminal A — bundle prover (Circuits 1A + 2)
+cargo run --release --bin bridge-prover
+
+# Terminal B — verifier (loads all three VKs; watches proofs/)
+cargo run --release --bin bridge-verifier
 ```
 
-This produces under `params/`:
+The prover bootstraps from the first key block (`seq_no ≥ W`) and writes `state/bootstrap_seed.json`; the verifier reads that seed. **Start the prover first.** The verifier runs indefinitely — send `SIGINT` to stop.
 
-| File | Size | Notes |
-|------|------|-------|
-| `kzg_bn254_20.srs` | 128 MB | Shared SRS, K=20 (also reused for K=17) |
-| `primary_vk.bin` / `primary_pk.bin` | 3.4 KB / 3.5 GB | Circuit 1a |
-| `primary_config_params.json` | 181 B | Circuit 1a `BaseCircuitParams` |
-| `layer_vk.bin` / `layer_pk.bin` | 2.6 KB / 2.7 GB | Circuit 2 |
-| `layer_config_params.json` | 181 B | Circuit 2 `BaseCircuitParams` |
-
-Subsequent runs load from this cache (~3 s per PK).
-
-### 4. Run the verifier and prover together
-
-Open two terminals from the project root.
+### Step 5 — Run the orchestrator
 
 ```bash
-# Terminal 1 — Verifier (start it first; it polls proofs/ for new files)
-RUST_LOG=info cargo run --release --bin bridge-verifier 2>&1 | tee logs/verifier_output.log
+cd /path/to/acki-nacki
+NETWORK=localhost python3 tests/exchange/generate_withdrawals_with_live_event_proving.py
 ```
 
-```bash
-# Terminal 2 — Prover
-RUST_LOG=info cargo run --release --bin bridge-prover 2>&1 | tee logs/prover_output.log
-```
+Orchestrator phases (printed with `[T+MM:SS]` timestamps):
 
-The prover waits for the node to reach `seq_no >= HISTORY_WINDOW_SIZE` (the
-first key block at height 4 with `WINDOW_SIZE=4`), bootstraps the BK set from
-GraphQL `bkSetUpdates`, then for each subsequent key block produces a
-`proof_{seqno:06}.json`. The verifier picks each one up, verifies both
-circuits, and writes `result_{seqno:06}.json`.
+1. Deploy multisig wallet, fund with ECC[2].
+2. Send `WithdrawalInitiated` via `TokenBridge`.
+3. Poll GraphQL for the ExtOut message, recover `(block_seq_no, block_height, envelope_hash, account_dapp_id, account_id)`.
+4. Compute `thinned_kb_seq = ((event_seq // (W·P)) + 1) · W · P` and wait for the verifier state to advance to it.
+5. Invoke (from this repo): `bridge-event-private-witness-export` → `bridge-event-witness-builder` → `bridge-event-prove --fixture <enriched.json> --out-dir proofs/`.
+6. Wait for `proofs/proof_event_NNN.result.json` from the verifier daemon.
+7. Assert `verified == true` and `anchor_matched == true`. Exit 0.
 
-Each daemon writes a summary block to stdout when it stops.
-
-### 5. (Optional) Re-run from clean state
+### Step 6 — Inspect results
 
 ```bash
-rm -f proofs/*.json state/*.json   # start fresh
-# keep params/  if you want to skip keygen, otherwise rm those too
+ls proofs/
+# proof_000512.json  result_000512.json
+# proof_001024.json  result_001024.json
+# proof_event_000000.json  proof_event_000000.result.json
+
+# Per-circuit timings (primary/layer/event proof_gen_ms fields)
+python3 -c "
+import json, glob
+for f in sorted(glob.glob('proofs/proof_*.json')):
+    d = json.load(open(f))
+    print(f, d.get('primary_proof_gen_ms','-'),'ms primary,',
+              d.get('layer_proof_gen_ms','-'),'ms layer,',
+              d.get('event_proof_gen_ms','-'),'ms event')
+"
 ```
 
 ---
 
 ## Configuration
 
-All configuration is currently via constants in source code.
+All configuration lives as constants in source (no env vars).
 
 ### Prover (`bridge-prover-daemon/src/main.rs`)
 
 | Constant | Default | Meaning |
-|----------|---------|---------|
+|---|---|---|
 | `GQL_ENDPOINT` | `http://localhost/graphql` | Acki Nacki GraphQL URL |
-| `HISTORY_WINDOW_SIZE` | `4` | **Must match node's `HISTORY_PROOF_WINDOW_SIZE`** |
-| `MAX_KEY_BLOCKS_TO_PROCESS` | `20` | Stop after this many key blocks |
-| `POLL_INTERVAL` | 3 s | GQL polling interval while waiting for a new key block |
-| `SLEEP_ON_RETRY` | 5 s | Backoff when block data is not yet available |
-| `VERIFIER_TIMEOUT` | 300 s | Max wait for a `result_{seqno}.json` file |
-| `PARAMS_DIR` | `./params` | Cached SRS / VK / PK |
-| `LOGS_DIR` | `./logs` | Failure witness dumps |
-| `STATE_FILE` | `./state/prover_state.json` | Persisted bridge state |
-| `BK_SET_CONFIG` | `./bk_set.json` | Optional fallback if GQL `bkSetUpdates` is empty |
+| `HISTORY_WINDOW_SIZE` | inherited from `node-block-client::HISTORY_PROOF_WINDOW_SIZE` | The shared `W`. |
+| `POLL_INTERVAL` | 3 s | Loop sleep while waiting for the next key block |
+| `SLEEP_ON_RETRY` | 5 s | Backoff when block data isn't yet available |
+| `VERIFIER_TIMEOUT` | 300 s | Max wait for a verifier result file |
+| `STATS_LOG_INTERVAL` | 60 s | Period of summary log lines |
+| `PARAMS_DIR` / `STATE_FILE` / `LOGS_DIR` / `BK_SET_CONFIG` | `./params` / `./state/prover_state.json` / `./logs` / `./bk_set.json` | On-disk locations |
 
 ### Verifier (`bridge-verifier-daemon/src/main.rs`)
 
 | Constant | Default | Meaning |
-|----------|---------|---------|
+|---|---|---|
 | `GQL_ENDPOINT` | `http://localhost/graphql` | For BK set extraction |
-| `PARAMS_DIR` | `./params` | Must match prover |
-| `POLL_INTERVAL` | 500 ms | How often to scan `proofs/` for new files |
-| `MAX_IDLE_WAIT` | 600 s | Auto-shutdown after this idle time |
-| `STATE_FILE` | `./state/verifier_state.json` | Independent verifier state |
-| `BK_SET_CONFIG` | `./bk_set.json` | Optional fallback |
+| `HISTORY_WINDOW_SIZE` | shared with the prover via the same crate | – |
+| `POLL_INTERVAL` | 500 ms | How often `proofs/` is scanned |
+| `STATS_LOG_INTERVAL` | 60 s | – |
+| `PARAMS_DIR` / `STATE_FILE` / `BK_SET_CONFIG` | `./params` / `./state/verifier_state.json` / `./bk_set.json` | – |
 
-### Circuit parameters (`bridge-prover-lib/src/keys.rs`)
+### Thinning (`bridge-prover-lib/src/lib.rs`)
 
-| Circuit | K | LOOKUP_BITS | Other |
-|---------|---|-------------|-------|
-| **1a — Primary Attestation** | 20 | 19 | `LIMB_BITS=104`, `NUM_LIMBS=5`, `MAX_SIGNERS=300` |
-| **2 — Layer Hashes Movement** | 17 | 16 | `MAX_LAYERS=10`, `MAX_CHAIN_LEN=11`, dense tree depth = 3 |
-
-The dense Poseidon tree has `2 + WINDOW_SIZE = 6` real leaves padded to 8
-(depth 3). With `WINDOW_SIZE=4`, layer 1 covers every 4 blocks, layer 2 every
-16 blocks, layer 3 every 64 blocks. This is why a clean test reaches layer 3
-at key block height 64.
+| Constant | Default | Meaning |
+|---|---|---|
+| `THINNING_FACTOR_P` | `4` | One bundle every `P` key blocks; bundle covers `W·P` source blocks. |
 
 ### `tokio_unstable`
 
-`.cargo/config.toml` enables `--cfg tokio_unstable` so the transitively-pulled
-`telemetry_utils` from the `node` crate can compile. Don't remove this file.
+`.cargo/config.toml` sets `--cfg tokio_unstable` because the transitively-pulled `telemetry_utils` from the node crate requires it. Do not delete that file.
 
 ---
 
-## Running Both Daemons Together
+## IPC, State, and On-disk Artifacts
 
-A typical end-to-end test produces ~20 key blocks, all verified OK:
-
-```
-$ ls proofs/
-proof_000008.json   result_000008.json
-proof_000012.json   result_000012.json
-proof_000016.json   result_000016.json   ← num_layers transitions 1 → 2
-...
-proof_000064.json   result_000064.json   ← num_layers transitions 2 → 3
-...
-proof_000084.json   result_000084.json
-```
-
-Each `result` file should report `primary_verified: true, layer_verified: true`.
-The verifier auto-shuts-down after `MAX_IDLE_WAIT` of inactivity.
-
-### Cleanup between runs
-
-```bash
-# Light reset — keep keys, redo proofs:
-rm -f proofs/*.json state/*.json
-
-# Full reset — also force keygen:
-rm -f proofs/*.json state/*.json params/primary_*.bin params/layer_*.bin \
-      params/primary_config_params.json params/layer_config_params.json
-```
-
----
-
-## Output and Results
-
-### Proof files (`proofs/proof_{seqno:06}.json`)
+### `proofs/proof_NNN.json` (block bundles, written by the prover)
 
 ```json
 {
-  "block_seq_no": 16,
-  "last_seen_block_seqno": 12,
-  "block_id_hex": "138105…",
-  "primary_proof_hex": "74aedc…",
-  "layer_proof_hex":   "…",
-  "layer_block_id_hex": "555962…",
+  "block_seq_no": 512,
+  "last_seen_block_seqno": 0,
+  "block_id_hex": "…",
+  "primary_proof_hex": "…",   "primary_proof_gen_ms": 102392,
+  "layer_proof_hex":   "…",   "layer_proof_gen_ms":   137310,
+  "layer_block_id_hex": "…",
   "bk_set_poseidon_hash_hex": "…",
   "num_layers": 2,
-  "layer_hash_frs_hex": ["…", "…", "0", "0", "0", "0", "0", "0", "0", "0"],
+  "layer_hash_frs_hex": ["…", "…", "0", … (MAX_LAYERS = 10 entries)],
   "prev_max_level_layer_hash_hex": "…"
 }
 ```
 
-- `primary_proof_hex` — Circuit 1a proof (8,192 bytes).
-- `layer_proof_hex` — Circuit 2 proof (6,112 bytes).
-- `num_layers` — number of active history layers in the preimage.
-- `layer_hash_frs_hex` — `MAX_LAYERS=10` field-element layer roots (the inactive
-  trailing slots are zero).
-
-### Result files (`proofs/result_{seqno:06}.json`)
+### `proofs/proof_event_NNN.json` (Circuit 4, written by `bridge-event-prove`)
 
 ```json
 {
-  "block_seq_no": 16,
-  "primary_verified": true,
-  "layer_verified": true,
-  "error": null
+  "schema_version": 1,
+  "seq_no": 0,
+  "proof_hex": "…",
+  "public_instances_hex": ["…", "…", …],
+  "self_verified": true,
+  "event_proof_gen_ms": 152166
 }
 ```
 
-On failure `error` is set to e.g. `"primary=true, layer=false"`.
+### `proofs/result_NNN.json` / `proof_event_NNN.result.json` (verifier ACK)
 
-### State files (`state/prover_state.json`, `state/verifier_state.json`)
-
+Result for a block bundle:
 ```json
-{
-  "layer_hashes": [
-    { "layer_number": 1, "root_hash": [...32 bytes...], "from_block_seqno": 84 },
-    { "layer_number": 2, "root_hash": [...], "from_block_seqno": 80 },
-    { "layer_number": 3, "root_hash": [...], "from_block_seqno": 64 }
-  ],
-  "last_key_block_seqno": 84,
-  "max_layers_ever_seen": 3
-}
+{ "block_seq_no": 512, "primary_verified": true, "layer_verified": true, "error": null }
 ```
 
-Higher layers are *retained* even when a later key block reports fewer
-`history_proofs` entries — this is what lets the chain proof keep moving
-through the highest active layer once it has appeared.
-
-### Daemon summaries (stdout at exit)
-
-Prover:
-
-```
-=== PROVER SUMMARY ===
-total time:              ~2700 s for 20 key blocks
-key blocks processed:    20
-primary proofs OK:       20
-layer proofs OK:         20
-verification OK:         20
-verification FAILED:     0
-avg proof time:          ~130 s
+Result for an event proof:
+```json
+{ "verified": true, "anchor_matched": true, "anchor_layer": 1, "anchor_slot": 17 }
 ```
 
-Verifier:
+### `state/prover_state.json` and `state/verifier_state.json`
 
-```
-=== VERIFIER SUMMARY ===
-total time:              ~2700 s
-total proofs received:   20
-both verified OK:        20
-primary only OK:         0
-layer only OK:           0
-both failed:             0
-```
+Persisted bridge state — layer hashes per active layer (1..`max_layers_ever_seen`), the last relayed key-block seqno/height, BK set commitment. The verifier file is the canonical off-chain mirror of the Ethereum contract's `layerWindows` storage.
+
+### `state/bootstrap_seed.json`
+
+Written by the prover on first run from the first key block's envelope; consumed by the verifier on startup so both halves agree on initial `(bk_set, height, last_seen)`.
 
 ---
 
 ## Performance
 
-Measured on a local clean run of `latest_an_to_eth_bridge_test_lightweight`
-(`HISTORY_PROOF_WINDOW_SIZE=4`, `MAX_KEY_BLOCKS_TO_PROCESS=20`,
-release profile, dev box, blocks 8–84).
+Measured on a local dev box (release profile, `opt-level = 3` in dev profile too) against a 5-node devnet at ~3 source blocks/s, `W = 128, P = 4`.
 
-### Per-block cost
+### Per-proof generation (latest E2E run)
 
-| Stage | Median | Notes |
-|-------|--------|-------|
-| Circuit 1a — Primary Attestation proof gen (K=20) | **~95 s** | 24 advice cols, MAX_SIGNERS=300 |
-| Circuit 1a verify | **~5 ms** | constant-time |
-| Circuit 2 — Layer Hashes Movement proof gen (K=17) | **~30 s** | depth-3 dense tree, MAX_CHAIN_LEN=11 |
-| Circuit 2 verify | **~3 ms** | constant-time |
-| End-to-end **per key block** (prove both + IPC + verify both) | **~130 s** | Including PK load/unload between circuits |
+| Circuit | K | Range |
+|---|---|---|
+| 1A (Primary BLS) | 20 | 102 – 144 s |
+| 2 (Layer Historical Hashes) | 17 | 103 – 137 s |
+| 4 (Bridge Event Prover) | 19 | ~152 s (n=1) |
 
-### Proof artifact sizes
+Verify times: ~5 ms (1A), ~3 ms (2), ~110 ms (4). All constant-time.
 
-| Artifact | Size |
-|----------|------|
-| Circuit 1a proof (raw) | 8,192 B |
-| Circuit 2 proof (raw) | 6,112 B |
-| Combined `proof_{seqno}.json` | ~29 KB |
-| `result_{seqno}.json` | ~120 B |
+### Whole E2E cycle
+
+| Metric | Value |
+|---|---|
+| Wall-clock (event emit → verifier ACK) | **~11:18** |
+| Bundles relayed before Circuit 4 is admissible | 2 (`thinned_kb_seq = 1024`) |
+| Bundle width on source side | `W·P = 512` blocks ≈ 4 min on devnet |
 
 ### Cached cryptographic artifacts
 
-| File | Size | Generated in |
-|------|------|--------------|
-| `params/kzg_bn254_20.srs` | 128 MB | ~1 s (first run) |
-| `params/primary_vk.bin` | 3.4 KB | ~37 s |
-| `params/primary_pk.bin` | 3.5 GB | ~26 s on top of VK |
-| `params/layer_vk.bin` | 2.6 KB | ~10 s |
-| `params/layer_pk.bin` | 2.7 GB | ~15 s on top of VK |
+| File | Size |
+|---|---|
+| `params/kzg_bn254_*.srs` | total 128 MB at K=20 (K=17/19 reuse) |
+| `params/primary_pk.bin` | ~3.5 GB |
+| `params/layer_pk.bin` | ~2.7 GB |
+| `params/event_pk.bin` | ~3+ GB |
 
-Total first-run keygen: ~90 s combined. Subsequent runs load each PK in
-~3 s when needed.
-
-### Memory profile
-
-| Phase | Peak RSS |
-|-------|----------|
-| Idle (no PK loaded) | < 1 GB |
-| Circuit 1a proof gen (primary PK loaded) | ~14 GB |
-| Circuit 2 proof gen (layer PK loaded) | ~10 GB |
-
-The on-demand PK load/unload in `bridge-prover-daemon/src/main.rs` keeps the
-two PKs from being resident simultaneously — without it, peak RSS would be
-≥ 22 GB and OOM on most dev machines.
-
-### End-to-end run
-
-Processing 20 consecutive key blocks at `WINDOW_SIZE=4` (heights
-8, 12, …, 84) covers every chain scenario:
-
-- **L1 same-layer** (steps 1..3) for blocks 8 → 12, 12 → 16, …
-- **L1 → L2 transition** at block 16 (`num_layers` 1 → 2)
-- **L2 same-layer** for blocks 16 → 20 → 24 → 28
-- **L2 → L3 transition** at block 64 (`num_layers` 2 → 3)
-- **L3 same-layer** for blocks 64 → 80 → 84
-- **`s < t` edge cases** when a key block reports fewer layers than the
-  current `max_layers_ever_seen`
-
-In our latest clean test all 20 of these blocks verified
-`BOTH VERIFIED OK` end-to-end.
-
----
-
-## Evaluating Results
-
-### What to check
-
-1. **`primary_verified` and `layer_verified` are both `true`** in every
-   `result_{seqno}.json`.
-2. **`num_layers` increases at the expected heights** — 1 for blocks 4..15, 2
-   for 16..63, 3 starting at 64 (with `WINDOW_SIZE=4`).
-3. **`bk_set_poseidon_hash_hex` is constant** across all proofs while the BK
-   set is unchanged.
-4. **`block_id_hex` (Circuit 1a output) and `layer_block_id_hex` (Circuit 2
-   output)** are emitted separately. Both are derived from the same block but
-   from different parts of the witness; cross-circuit binding is enforced
-   inside the circuits via the shared `bk_set_poseidon_hash`.
-5. **Prover and verifier `last_key_block_seqno` stay in lockstep.**
-
-### Investigating failures
-
-- `proofs/result_{seqno}.json` carries the short error string
-  (`primary=true, layer=false` etc.).
-- `logs/block_{seqno}_witnesses.json` is written if Circuit 1a witness
-  construction itself failed (BLS deserialization or BK-set lookup).
-- Common causes:
-  - **Window size mismatch** between node and prover (`HISTORY_PROOF_WINDOW_SIZE`
-    vs `HISTORY_WINDOW_SIZE`) — Circuit 2 will fail at the chain step.
-  - **BK set rotation mid-run** — verifier and prover may briefly disagree on
-    the Poseidon commitment; restart both daemons.
-  - **`primary=true, layer=false`** at the *first* block after a run timeout —
-    state was advanced past the key block but proofs/ wasn't cleared.
+Peak RSS stays around the largest of the three (load-on-demand).
 
 ---
 
 ## Integration Tests
 
-All tests below require a running local Acki Nacki node on
-`http://localhost/graphql` (branch `latest_an_to_eth_bridge_test_lightweight`).
+All require the local Acki Nacki cluster up on `http://localhost/graphql`.
 
 ```bash
-# BLS verification on a live attestation (~1 s, no proof gen)
-cargo test -p bridge-prover-lib --test live_attestation_test -- --nocapture
-
-# Single Circuit 1a proof from live data (~2-3 min, K=20)
-cargo test -p bridge-prover-lib --test live_proof_test -- --nocapture
-
-# Both circuits on a single live key block (~2.5 min total)
-cargo test -p bridge-prover-lib --test both_circuits_test -- --nocapture
-
-# 10 consecutive Circuit 1a proofs (~20 min)
-cargo test -p bridge-prover-lib --test live_10_blocks_test -- --nocapture
-
-# Reconstruct real Poseidon trees from live data and cross-check vs node hashes
-cargo test -p bridge-prover-lib --test tree_reconstruction_test -- --nocapture
-
-# BK set extraction from shellnet (no local node needed, ~1 s)
-cargo test -p bridge-prover-lib --test shellnet_bk_set_test -- --nocapture
-```
-
----
-
-## Project Structure
-
-```
-acki-nacki-to-eth-bridge-halo2-prover/
-├── Cargo.toml                          # Workspace
-├── .cargo/config.toml                  # --cfg tokio_unstable
-├── README.md                           # This file
-├── bridge-prover-lib/                  # Core library
-│   ├── src/
-│   │   ├── lib.rs                      # Re-exports
-│   │   ├── gql_client.rs               # GraphQL client (blocks, boc, bkSetUpdates)
-│   │   ├── boc_parser.rs               # Attestation extraction from boc
-│   │   ├── block_data_parser.rs        # `data` field parser (history_proofs, etc.)
-│   │   ├── attestation_fetcher.rs      # High-level attestation+BK fetch
-│   │   ├── bk_set_fetcher.rs           # BK set bootstrap from bkSetUpdates / fallback
-│   │   ├── poseidon.rs                 # Native Poseidon BK-set commitment
-│   │   ├── block_id_tree.rs            # 8-leaf SHA-256 block_id Merkle tree
-│   │   ├── chain_proof_builder.rs      # Dense Poseidon Merkle tree + chain links
-│   │   ├── real_chain_builder.rs       # Reconstructs L1/L2/L3 trees from real blocks
-│   │   ├── bridge_state.rs             # Persisted state (layer hashes, last seqno)
-│   │   ├── keys.rs                     # SRS + Circuit 1a + Circuit 2 keygen / cache
-│   │   ├── prover.rs                   # Circuit 1a proof generation
-│   │   ├── verifier.rs                 # Circuit 1a proof verification
-│   │   ├── layer_prover.rs             # Circuit 2 proof generation
-│   │   ├── layer_verifier.rs           # Circuit 2 proof verification
-│   │   └── ipc.rs                      # File-based IPC (combined proof + result JSON)
-│   └── tests/
-│       ├── live_attestation_test.rs
-│       ├── live_proof_test.rs
-│       ├── live_10_blocks_test.rs
-│       ├── both_circuits_test.rs
-│       ├── tree_reconstruction_test.rs
-│       └── shellnet_bk_set_test.rs
-├── bridge-prover-daemon/
-│   └── src/main.rs                     # Per-key-block: prove 1a + 2, IPC, persist state
-├── bridge-verifier-daemon/
-│   └── src/main.rs                     # Watch proofs/, verify both circuits, persist
-├── params/                             # Cached cryptographic artifacts (gitignored)
-├── proofs/                             # IPC directory (gitignored)
-├── state/                              # Persisted bridge state (gitignored)
-└── logs/                               # Daemon stdout/stderr (gitignored)
+cargo test -p bridge-prover-lib --test live_attestation_test  -- --nocapture  # BLS verify, no proof gen, ~1 s
+cargo test -p bridge-prover-lib --test live_proof_test        -- --nocapture  # Circuit 1A from live, K=20, ~2-3 min
+cargo test -p bridge-prover-lib --test both_circuits_test     -- --nocapture  # 1A + 2 on one key block, ~2.5 min
+cargo test -p bridge-prover-lib --test live_10_blocks_test    -- --nocapture  # 10× Circuit 1A, ~20 min
+cargo test -p bridge-prover-lib --test tree_reconstruction_test -- --nocapture  # rebuild L1/L2/L3 from real blocks
+cargo test -p bridge-prover-lib --test shellnet_bk_set_test   -- --nocapture  # BK set extraction (no local node)
+cargo test -p bridge-prover-lib --test event_prover           -- --nocapture  # Circuit 4 standalone
 ```
 
 ---
 
 ## Troubleshooting
 
-### "primary VK not found" on verifier startup
-
-Run the prover at least once first — it generates the VK and config files for
-both circuits. The verifier needs `params/{primary,layer}_vk.bin` and
-`params/{primary,layer}_config_params.json` but **not** the PKs.
-
-### "BK set is empty after processing bkSetUpdates"
-
-The GraphQL `bkSetUpdates` history adds + removes netted to zero active
-signers. This usually means the genesis BK set isn't represented in
-`bkSetUpdates`. Provide a fallback `bk_set.json` (the prover and verifier both
-fall back to it).
-
-### Window size mismatch
-
-If the node was built with a different `HISTORY_PROOF_WINDOW_SIZE` than the
-prover's `HISTORY_WINDOW_SIZE`, Circuit 2 fails at the dense-tree chain check.
-Both must be `4`.
-
-### "spawned_tasks_count not found" / similar tokio errors
-
-The workspace requires `--cfg tokio_unstable` (set in `.cargo/config.toml`).
-Don't remove that file. If you cargo-clean and the flag is missing, rebuild
-will fail to compile `telemetry_utils` brought in by the `node` crate.
-
-### "node crate workspace conflict"
-
-If you accidentally placed the prover repo *inside* a checkout of `acki-nacki`,
-Cargo may try to absorb it into that workspace. The prover uses `node` and
-`node-types` as **git** dependencies (pinned to
-`branch = "latest_an_to_eth_bridge_test_lightweight"`), not path dependencies — keep the
-two repos in separate directories.
-
-### Verifier idle-shutdown during slow runs
-
-`MAX_IDLE_WAIT` defaults to 600 s. Under heavy load (proof gen > 10 min) the
-verifier may exit before the next proof appears. Increase `MAX_IDLE_WAIT` or
-restart the verifier — the prover will recover on the next key block.
-
-### Slow proof generation (>200 s for Circuit 1a)
-
-Normal under CPU contention with the local Docker node. Solo numbers on the
-same machine are ~95 s for Circuit 1a and ~30 s for Circuit 2.
-
-### Keygen interrupted
-
-If keygen for either circuit is interrupted, delete the partial files:
-
-```bash
-rm -f params/primary_pk.bin params/primary_vk.bin params/primary_config_params.json
-rm -f params/layer_pk.bin   params/layer_vk.bin   params/layer_config_params.json
-```
-
-The next run will redo keygen cleanly.
+| Symptom | Cause / Fix |
+|---|---|
+| Verifier exits with `"primary VK not found"` or `"layer VK not found"` | Run `bridge-prover` first — it generates 1A/2 keys on initial start. |
+| Verifier exits with `"event VK not found"` | Run `cargo run --release --bin bridge-event-prove -- --selftest` once. |
+| Orchestrator hits `VERIFIER_STATE_TIMEOUT_S` | One bundle ≈ 4 min on devnet — confirm the prover is producing bundles (its stdout). |
+| `non-monotone height` in verifier log | `state/` was wiped without restarting the cluster (chain is past the persisted `last_seen_block_height`). Restart cluster, or restore `state/bootstrap_seed.json` from backup. |
+| W mismatch — verifier rejects bundles with wrong layer count | Node Docker image and prover binary disagree on `HISTORY_PROOF_WINDOW_SIZE`. Re-run `make run` after editing `history_proof.rs`. |
+| Circuit 4 verification fails on a fresh `W` | Cached `event_vk.bin` is for the previous `W`. Delete `params/event_*.bin` and re-run keygen. |
+| `spawned_tasks_count not found` / similar tokio errors | `--cfg tokio_unstable` missing. Restore `.cargo/config.toml`. |
+| `node crate workspace conflict` | Don't place this repo inside `acki-nacki/`. Both `node-block-client` and `node-types` are git dependencies. |
+| Keygen interrupted | Delete partial `params/{primary,layer,event}_*.bin` and re-run. |
