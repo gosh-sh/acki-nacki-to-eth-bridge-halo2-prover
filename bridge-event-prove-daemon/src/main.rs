@@ -27,6 +27,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,9 @@ struct OutputSummary<'a> {
     public_instances_hex: Vec<String>,
     /// Path to the on-disk proof JSON if `--out-dir` was given.
     proof_file: Option<String>,
+    /// Wall-clock time spent generating the Circuit 4 proof, in milliseconds.
+    /// Excludes PK load/unload and self-verification.
+    event_proof_gen_ms: u64,
 }
 
 fn main() -> ExitCode {
@@ -157,6 +161,7 @@ fn run() -> Result<()> {
         .context("ensure_event_keys failed")?;
     km.load_event_pk().context("load_event_pk failed")?;
 
+    let t_proof = Instant::now();
     let out: EventProofOutput = if args.selftest {
         info!("synthesising inputs via build_synthetic_event_keygen_inputs(seed={SELFTEST_SEED:#x})");
         let (circuit, instances) = build_synthetic_event_keygen_inputs(SELFTEST_SEED);
@@ -170,6 +175,8 @@ fn run() -> Result<()> {
             .with_context(|| format!("failed to parse PrivateWitness JSON from {}", fixture_path.display()))?;
         generate_event_proof(&km, &witness)?
     };
+    let event_proof_gen_ms = t_proof.elapsed().as_millis() as u64;
+    info!("Circuit 4 proof generated in {} ms", event_proof_gen_ms);
 
     // Self-verify before unloading PK — catches gross misconfiguration
     // (wrong VK, mismatched config, etc.) before the orchestrator has to.
@@ -201,6 +208,7 @@ fn run() -> Result<()> {
             "proof_hex": proof_hex,
             "public_instances_hex": public_instances_hex,
             "self_verified": ok,
+            "event_proof_gen_ms": event_proof_gen_ms,
         });
         std::fs::write(&fname, serde_json::to_vec_pretty(&on_disk)?)
             .with_context(|| format!("failed to write {}", fname.display()))?;
@@ -219,6 +227,7 @@ fn run() -> Result<()> {
         proof_hex,
         public_instances_hex,
         proof_file,
+        event_proof_gen_ms,
     };
     println!("{}", serde_json::to_string(&summary)?);
     Ok(())

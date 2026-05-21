@@ -20,7 +20,7 @@ historical-layer-hashes-movement-checker-circuit = { git = "https://github.com/g
 bridge-parsers = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
 bridge-poseidon = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
 bridge-test-data-gen = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
-bridge-event-prove-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "circuit4-w-parameterized", default-features = false, features = ["w-8"] }
+bridge-event-prove-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "circuit4-w-parameterized", default-features = false, features = ["w-128"] }
 gosh-bls-verification = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
 gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
 gosh-sha256-chip = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
@@ -60,8 +60,9 @@ halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls1
 
 # Local override so the daemons pick up the current W in
 # acki-nacki/node/libs/node-block-client/src/history_proof.rs without needing
-# to push to the shared branch. Currently W=8 (test config). Revert this block
-# when the W change is merged into the shared `test_bridge_poseidon_dex` branch.
+# to push to the shared branch. Currently W=128 (production scale-up). Revert
+# this block when the W change is merged into the shared
+# `test_bridge_poseidon_dex` branch.
 [patch."https://github.com/gosh-sh/acki-nacki.git"]
 node-block-client = { path = "../acki-nacki/node/libs/node-block-client" }
 

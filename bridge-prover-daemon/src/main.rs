@@ -250,6 +250,7 @@ async fn main() -> anyhow::Result<()> {
         key_manager.load_primary_pk()?;
 
         info!("key block {}: generating Circuit 1a proof...", target_seqno);
+        let t_primary = Instant::now();
         let primary_proof = match prover::generate_primary_proof(
             &key_manager,
             &attestation.raw_bytes,
@@ -272,7 +273,11 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
         };
-        info!("key block {}: Circuit 1a proof generated", target_seqno);
+        let primary_proof_gen_ms = t_primary.elapsed().as_millis() as u64;
+        info!(
+            "key block {}: Circuit 1a proof generated in {} ms",
+            target_seqno, primary_proof_gen_ms
+        );
 
         // ---- Circuit 2: Layer Hashes Movement Proof ----
         // Inputs are reconstructed from real block data:
@@ -285,6 +290,7 @@ async fn main() -> anyhow::Result<()> {
         key_manager.load_layer_pk()?;
 
         info!("key block {}: generating Circuit 2 proof...", target_seqno);
+        let t_layer = Instant::now();
         let layer_proof = match generate_layer_proof_for_key_block(
             &key_manager,
             &gql,
@@ -308,7 +314,11 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
         };
-        info!("key block {}: Circuit 2 proof generated", target_seqno);
+        let layer_proof_gen_ms = t_layer.elapsed().as_millis() as u64;
+        info!(
+            "key block {}: Circuit 2 proof generated in {} ms",
+            target_seqno, layer_proof_gen_ms
+        );
 
         let proof_time = t_proof.elapsed();
         stats.total_proof_time += proof_time;
@@ -356,6 +366,8 @@ async fn main() -> anyhow::Result<()> {
             num_layers: layer_proof.num_layers,
             layer_hash_frs_hex: layer_proof.layer_hash_frs.iter().map(|fr| ipc::fr_to_hex(fr)).collect(),
             prev_max_level_layer_hash_hex: ipc::fr_to_hex(&layer_proof.prev_max_level_layer_hash_fr),
+            primary_proof_gen_ms,
+            layer_proof_gen_ms,
         };
         ipc::write_combined_proof(&request)?;
         info!("key block {}: proof written, waiting for verifier...", target_seqno);

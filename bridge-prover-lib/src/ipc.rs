@@ -57,6 +57,17 @@ pub struct ProofRequest {
     pub layer_hash_frs_hex: Vec<String>,
     /// Previous max-level layer hash as hex Fr.
     pub prev_max_level_layer_hash_hex: String,
+
+    // ---- Proof generation timings (added: per-circuit wall-clock, ms) ----
+    /// Wall-clock time spent generating the Circuit 1a (primary) proof, in
+    /// milliseconds. Excludes PK load/unload. `#[serde(default)]` so older
+    /// proof JSONs (without this field) still deserialize as 0.
+    #[serde(default)]
+    pub primary_proof_gen_ms: u64,
+    /// Wall-clock time spent generating the Circuit 2 (layer) proof, in
+    /// milliseconds. Excludes PK load/unload.
+    #[serde(default)]
+    pub layer_proof_gen_ms: u64,
 }
 
 /// JSON structure for verification result files.
