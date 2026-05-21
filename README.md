@@ -92,7 +92,7 @@ acki-nacki-to-eth-bridge-halo2-prover/
 - **~10 GB free disk** under `params/` (KZG SRS + three PKs).
 - **~16 GB RAM** during proof generation.
 - **Docker / docker compose** for the local 5-node Acki Nacki cluster.
-- Sibling checkout of [`acki-nacki`](https://github.com/gosh-sh/acki-nacki) with the matching `HISTORY_PROOF_WINDOW_SIZE` (see runbook Step 0).
+- Sibling checkout of [`acki-nacki`](https://github.com/gosh-sh/acki-nacki) on branch **`test_bridge_poseidon_dex`** (forked from `poseidon_hex`). This is the only branch the E2E test is known to work against.
 - Python 3 + `tvm-cli` on PATH for the orchestrator.
 
 ---
@@ -101,14 +101,30 @@ acki-nacki-to-eth-bridge-halo2-prover/
 
 Drives one full bridge cycle: deploy multisig → emit `WithdrawalInitiated` → wait for thinned key block → build private witness → prove Circuit 4 → verifier ACKs.
 
-### Step 0 — Confirm `W` and `P` agree everywhere
+### Step 0 — Pick up the right branches; confirm `W` and `P` agree
+
+> **⚠ The full E2E test only runs at `W = 128` today.** The `w-8` Cargo
+> feature in `bridge-event-prove-circuit` is for fast MockProver tests of
+> Circuit 4 only — the orchestrator + node + prover-daemon path has not been
+> retuned/exercised against it. **Do not change `W` to 8 to "speed up" the
+> live test.**
+
+Sibling repos must be on these specific branches:
+
+| Repo | Branch |
+|---|---|
+| `gosh-sh/acki-nacki` | **`test_bridge_poseidon_dex`** (forked from `poseidon_hex`) |
+| `gosh-sh/acki-nacki-to-eth-bridge-halo2-prover` (this repo) | `full_bridge_flow_test` |
+| `gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits` | `circuit4-w-parameterized` (pinned via this repo's `Cargo.toml:23`) |
+
+Verify all five `W`/`P` knobs agree:
 
 | File | Setting |
 |---|---|
 | `acki-nacki/node/libs/node-block-client/src/history_proof.rs` | `HISTORY_PROOF_WINDOW_SIZE = 128` |
 | `acki-nacki/node/src/types/history_proof.rs` | same |
 | `bridge-prover-lib/src/lib.rs` | `THINNING_FACTOR_P = 4` |
-| `Cargo.toml` | `bridge-event-prove-circuit features = ["w-128"]` |
+| `Cargo.toml` (workspace root) | `bridge-event-prove-circuit features = ["w-128"]` |
 | `acki-nacki/tests/exchange/generate_withdrawals_with_live_event_proving.py` | `W = 128, P = 4` |
 
 Changing `W` requires rebuilding the node image **and** re-running Circuit 4 keygen — its VK is `W`-specific. Circuits 1A/2 PKs are `W`-independent.
@@ -117,8 +133,9 @@ Changing `W` requires rebuilding the node image **and** re-running Circuit 4 key
 
 ```bash
 cd /path/to/acki-nacki
-make run                       # kill + build_node + run_silent
-docker ps                       # expect node{0..4}, q_server0, block_manager, nginx0, aerospike
+git checkout test_bridge_poseidon_dex   # forked from poseidon_hex; only branch known-good for E2E
+make run                                 # kill + build_node + run_silent
+docker ps                                # expect node{0..4}, q_server0, block_manager, nginx0, aerospike
 ```
 
 First-ever build: 10–20 min. Incremental rebuilds use the Docker cache.
@@ -142,7 +159,7 @@ All commands run from the root of **this** repo. Skip files that already exist.
 | 2 — Layer Historical Hashes (K=17) | `layer_vk.bin`, `layer_pk.bin` (~2.7 GB) | same — produced by the `bridge-prover` run above. |
 | 4 — Bridge Event Prover (K=19) | `event_vk.bin`, `event_pk.bin` | `cargo run --release --bin bridge-event-prove -- --selftest` (~5 min). **Must run before** `bridge-verifier` — verifier bails on missing VKs. |
 
-After switching `W` (e.g. `w-8` ↔ `w-128`), delete `params/event_*.bin` and re-run the `--selftest` line.
+(The `w-8` Cargo feature exists for Circuit 4 MockProver tests — not for the live E2E test. See Step 0.)
 
 ### Step 4 — Start the daemons
 
