@@ -15,7 +15,7 @@ use bridge_event_private_witness_export::{
     },
     BlockContextInput,
 };
-use bridge_event_prove_circuit::bridge_event_prove_circuit::NUM_LAYER_HASHES;
+use bridge_event_prove_circuit::bridge_event_prove_circuit::TOTAL_PUBLIC_INPUTS;
 use bridge_prover_lib::event_prover::{build_proof_inputs, default_event_circuit_params};
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 
@@ -62,13 +62,7 @@ fn populated_witness() -> PrivateWitness {
         siblings_hex: (0..8).map(|i| hex::encode([(0x80 | i) as u8; 32])).collect(),
     };
 
-    // 80 layer-hash slots, hash_choice_index = 5, all distinct.
-    let mut layer_hashes_public_hex: Vec<String> = (0..NUM_LAYER_HASHES)
-        .map(|i| hex::encode([(i as u8) | 0x01u8; 32]))
-        .collect();
     let chosen_layer_hash = hex::encode([0xCAu8; 32]);
-    let hash_choice_index = 5u32;
-    layer_hashes_public_hex[hash_choice_index as usize] = chosen_layer_hash.clone();
 
     // Pad an active first link + (MAX_CHAIN_LEN_EXPECTED - 1) inactive
     // links. Inactive sibling depth matches the active link.
@@ -94,8 +88,6 @@ fn populated_witness() -> PrivateWitness {
         layer_idx: 0,
         height: 9999,
         layer_hash_hex: chosen_layer_hash,
-        layer_hashes_public_hex,
-        hash_choice_index,
         dense_chain,
         num_active_chain_steps: 1,
     };
@@ -112,33 +104,22 @@ fn happy_path_translates_to_circuit_inputs() {
     let inputs = build_proof_inputs(&w, default_event_circuit_params())
         .expect("build_proof_inputs must succeed on fully-populated witness");
 
-    // public_instances layout (9 leading slots, see event_verifier.rs):
+    // public_instances layout (10 slots, see event_verifier.rs):
     //   [token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
-    //    sender_acc_fr, dapp_fr, acc_fr, nullifier, layer_hashes...]
-    assert_eq!(inputs.public_instances.len(), 9 + NUM_LAYER_HASHES);
+    //    sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root]
+    assert_eq!(inputs.public_instances.len(), TOTAL_PUBLIC_INPUTS);
     assert_eq!(inputs.public_instances[0], Fr::from(EXPECTED_TOKEN_ID as u64));
 
-    // The remaining 8 leading slots come from BE/LE byte-packing of the
-    // fixture data; we don't recompute them here, but we assert they're
-    // distinct from the zero-byte default so we know the translation
-    // actually ran. (Slots 1..=8 are amount, recipient_hi, recipient_lo,
-    // dst_chain_id, sender_acc_fr, dapp_fr, acc_fr, nullifier.)
-    for slot in 1..9 {
+    // The remaining slots come from BE/LE byte-packing of the fixture
+    // data; we don't recompute them here, but we assert they're distinct
+    // from the zero-byte default so we know the translation actually
+    // ran. (Slots 1..=9 are amount, recipient_hi, recipient_lo,
+    // dst_chain_id, sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root.)
+    for slot in 1..TOTAL_PUBLIC_INPUTS {
         assert_ne!(
             inputs.public_instances[slot],
             Fr::zero(),
-            "leading public-instance slot {slot} must be non-zero with our fixture seeding"
-        );
-    }
-
-    // Layer hashes start at index 9 and must all be present.
-    for i in 0..NUM_LAYER_HASHES {
-        // The chosen slot must equal a Fr decoded from anchor.layer_hash_hex —
-        // i.e. all slots are non-zero given our 0x01-onward seeding.
-        assert_ne!(
-            inputs.public_instances[9 + i],
-            Fr::zero(),
-            "layer_hashes[{i}] must be non-zero with our fixture seeding"
+            "public-instance slot {slot} must be non-zero with our fixture seeding"
         );
     }
 }
@@ -186,36 +167,6 @@ fn missing_block_tree_proof_errors() {
     w.block_tree_proof = None;
     let err = must_err(&w, "missing block_tree_proof");
     assert!(format!("{err}").contains("block_tree_proof missing"));
-}
-
-#[test]
-fn layer_hashes_wrong_length_errors() {
-    let mut w = populated_witness();
-    let anchor = w.anchor.as_mut().unwrap();
-    anchor.layer_hashes_public_hex.pop();
-    let err = must_err(&w, "undersized layer_hashes_public_hex");
-    assert!(format!("{err}").contains("NUM_LAYER_HASHES"));
-}
-
-#[test]
-fn hash_choice_index_out_of_range_errors() {
-    let mut w = populated_witness();
-    let anchor = w.anchor.as_mut().unwrap();
-    anchor.hash_choice_index = NUM_LAYER_HASHES as u32;
-    let err = must_err(&w, "hash_choice_index out of range");
-    assert!(format!("{err}").contains("hash_choice_index"));
-}
-
-#[test]
-fn inconsistent_layer_hash_errors() {
-    let mut w = populated_witness();
-    let anchor = w.anchor.as_mut().unwrap();
-    // Replace the public slot at hash_choice_index with a different hash —
-    // anchor.layer_hash_hex no longer matches.
-    let idx = anchor.hash_choice_index as usize;
-    anchor.layer_hashes_public_hex[idx] = hex::encode([0xDEu8; 32]);
-    let err = must_err(&w, "inconsistent anchor.layer_hash_hex");
-    assert!(format!("{err}").contains("does not match"));
 }
 
 #[test]

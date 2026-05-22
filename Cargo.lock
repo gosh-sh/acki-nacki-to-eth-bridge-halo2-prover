@@ -487,10 +487,10 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "attestation-bls-checker-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#ff51a47ab845ce4e6089b5a93f746ede1662ca66"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-single-final-root#fc63863cfdfe039aafe2047606764d30bf76d60e"
 dependencies = [
  "bridge-parsers",
- "bridge-poseidon 0.1.0 (git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main)",
+ "bridge-poseidon",
  "gosh-bls-verification",
  "gosh-sha256-chip",
  "halo2-base 0.4.0",
@@ -830,9 +830,9 @@ dependencies = [
 [[package]]
 name = "bridge-event-prove-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-w-parameterized#0715e7edfd26bc602c8578b4380ccddb7f331c3b"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-single-final-root#fc63863cfdfe039aafe2047606764d30bf76d60e"
 dependencies = [
- "bridge-poseidon 0.1.0 (git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-w-parameterized)",
+ "bridge-poseidon",
  "dense-balanced-tree",
  "failure",
  "gosh-dense-balanced-tree",
@@ -886,7 +886,7 @@ dependencies = [
 [[package]]
 name = "bridge-parsers"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#ff51a47ab845ce4e6089b5a93f746ede1662ca66"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-single-final-root#fc63863cfdfe039aafe2047606764d30bf76d60e"
 dependencies = [
  "hex",
 ]
@@ -894,18 +894,7 @@ dependencies = [
 [[package]]
 name = "bridge-poseidon"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-w-parameterized#0715e7edfd26bc602c8578b4380ccddb7f331c3b"
-dependencies = [
- "gosh-bls-verification",
- "halo2-base 0.4.0",
- "num-bigint 0.4.6",
- "pse-poseidon",
-]
-
-[[package]]
-name = "bridge-poseidon"
-version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#ff51a47ab845ce4e6089b5a93f746ede1662ca66"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-single-final-root#fc63863cfdfe039aafe2047606764d30bf76d60e"
 dependencies = [
  "gosh-bls-verification",
  "halo2-base 0.4.0",
@@ -944,7 +933,7 @@ dependencies = [
  "bridge-event-private-witness-export",
  "bridge-event-prove-circuit",
  "bridge-parsers",
- "bridge-poseidon 0.1.0 (git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main)",
+ "bridge-poseidon",
  "bridge-test-data-gen",
  "gosh-bls-verification",
  "gosh-dense-balanced-tree",
@@ -970,11 +959,11 @@ dependencies = [
 [[package]]
 name = "bridge-test-data-gen"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#ff51a47ab845ce4e6089b5a93f746ede1662ca66"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-single-final-root#fc63863cfdfe039aafe2047606764d30bf76d60e"
 dependencies = [
  "anyhow",
  "bincode",
- "bridge-poseidon 0.1.0 (git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main)",
+ "bridge-poseidon",
  "gosh-dense-balanced-tree",
  "gosh_blst",
  "halo2-base 0.4.0",
@@ -2473,7 +2462,7 @@ checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 [[package]]
 name = "historical-layer-hashes-movement-checker-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#ff51a47ab845ce4e6089b5a93f746ede1662ca66"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-single-final-root#fc63863cfdfe039aafe2047606764d30bf76d60e"
 dependencies = [
  "gosh-dense-balanced-tree",
  "gosh-sha256-chip",

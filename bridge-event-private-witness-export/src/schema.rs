@@ -112,21 +112,20 @@ pub struct MerkleProofData {
 
 /// Reference to a layer hash already mirrored by the verifier — the
 /// "anchor" the event proof binds to. The daemon (Track D) populates this
-/// from `state/verifier_state.json`.
+/// from `state/verifier_state.json`. With anonymization dropped, the
+/// circuit exposes a single `final_root` public input, so the daemon only
+/// needs to supply the matching anchor hash (and the dense chain to
+/// rebuild it inside the circuit).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnchorRef {
     /// Which layer in `layer_windows` we chose (0 = L1, 1 = L2, ...).
     pub layer_idx: u32,
     /// Slot's `last_height` — for human verification.
     pub height: u64,
-    /// Selected layer hash, 32 bytes hex.
+    /// Selected layer hash, 32 bytes hex. This is the value the prover
+    /// will publish as `PUB_FINAL_ROOT`, and the verifier checks it
+    /// against its current `layer_windows` snapshot off-circuit.
     pub layer_hash_hex: String,
-    /// Full vector of `NUM_LAYER_HASHES` candidates supplied as public
-    /// instances; the circuit privately picks one via `hash_choice_index`.
-    /// Length must equal `MAX_LAYERS * W` (80 at W=8).
-    pub layer_hashes_public_hex: Vec<String>,
-    /// Index into `layer_hashes_public_hex` of the chosen layer hash.
-    pub hash_choice_index: u32,
     /// Dense chain (history window proof) — daemon-side artifact.
     pub dense_chain: Vec<DenseChainLinkSer>,
     /// How many of `dense_chain` are active (rest are inactive padding to

@@ -718,10 +718,10 @@ fn process_event_proof(
 
     // Public instance layout (per `event_verifier.rs`):
     //   [token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
-    //    sender_acc_fr, dapp_fr, acc_fr, nullifier,
-    //    layer_hashes[0..NUM_LAYER_HASHES]]
-    // where NUM_LAYER_HASHES = MAX_LAYERS * window_size (== 80 on W=8).
-    let expected_num_instances = 9 + MAX_LAYERS * state.window_size;
+    //    sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root]
+    // The circuit now publishes a single `final_root` slot; the verifier
+    // checks it off-circuit against `state.flatten_layer_hashes()` below.
+    let expected_num_instances = 10;
     if file.public_instances_hex.len() != expected_num_instances {
         let msg = format!(
             "expected {} public instances, got {}",
@@ -751,25 +751,18 @@ fn process_event_proof(
 
     // ---- Anchor check (the "current bridge state" gate) ----
     //
-    // Mirror of the on-chain check at README:991 — "A Circuit 4 proof is
-    // accepted only against the contract's *current* MAX_LAYERS × W layer-
-    // hash array (byte-identical match)". The trailing 80 instances are
-    // compared to `state.flatten_layer_hashes()` slot by slot.
+    // The circuit publishes a single `final_root` (instance slot 9). The
+    // verifier accepts the proof iff that root matches one of the layer
+    // hashes the daemon currently mirrors in `state.layer_windows` — the
+    // off-circuit replacement for the old in-circuit candidate vector.
     let current_hashes = state.flatten_layer_hashes();
     debug_assert_eq!(current_hashes.len(), MAX_LAYERS * state.window_size);
-    let mut mismatched_slot: Option<usize> = None;
-    for (i, expected_bytes) in current_hashes.iter().enumerate() {
-        let actual_bytes: [u8; 32] = instances[9 + i].to_repr();
-        if actual_bytes != *expected_bytes {
-            mismatched_slot = Some(i);
-            break;
-        }
-    }
-    if let Some(slot) = mismatched_slot {
+    let final_root_bytes: [u8; 32] = instances[9].to_repr();
+    let anchor_matched = current_hashes.iter().any(|h| *h == final_root_bytes);
+    if !anchor_matched {
         let msg = format!(
-            "anchor mismatch at slot {} — proof was built against a layer-hash array \
-             that does not match the daemon's current state",
-            slot
+            "anchor mismatch — final_root {} not found in current layer_windows",
+            hex::encode(final_root_bytes),
         );
         warn!("event {}: {}", seq_no, msg);
         let result = EventProofResult {

@@ -8,10 +8,10 @@
 //! Two responsibilities:
 //!   1. **Input conversion** — deserialize the witness JSON, hex-decode
 //!      cell records, and assemble a `BridgeEventProveCircuit` instance.
-//!   2. **Public instance derivation** — build the 9-slot leading vector
+//!   2. **Public instance derivation** — build the 10-slot vector
 //!      `[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
-//!      sender_acc_fr, dapp_fr, acc_fr, nullifier]` followed by the
-//!      `NUM_LAYER_HASHES` anchor slots that the verifier will need.
+//!      sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root]` that the
+//!      verifier checks.
 //!
 //! Keygen / real-prover plumbing is deliberately **not** wired in here yet.
 //! The daemon (Track D) will own that — same on-demand PK loading pattern
@@ -22,17 +22,13 @@
 //!
 //! ### Anchor binding contract
 //!
-//! The witness's `anchor.layer_hashes_public_hex` array becomes the public
-//! `layer_hashes` instance values. The circuit privately selects index
-//! `anchor.hash_choice_index` and constrains the selected hash to equal
-//! its computed `final_root`. The daemon must therefore guarantee:
-//!   * `layer_hashes_public_hex.len() == NUM_LAYER_HASHES` (80 at W=8)
-//!   * `layer_hashes_public_hex[hash_choice_index]` is the slot's actual
-//!     hash that the prover's chain of Merkle proofs reaches.
-//!
-//! If those two invariants hold, the proof binds (privately) to a known
-//! layer hash — providing the anonymity slice §1 of the bridge spec calls
-//! for.
+//! The witness's `anchor.layer_hash_hex` becomes the proof's
+//! `PUB_FINAL_ROOT` instance slot. The circuit computes `final_root` by
+//! climbing the supplied dense chain and exposes that value publicly. The
+//! bridge has no anonymization goal, so there is no `hash_choice_index`
+//! and no `NUM_LAYER_HASHES`-wide candidate vector — the verifier simply
+//! checks `final_root` against its current mirror of `layer_windows`
+//! off-circuit.
 
 use std::convert::TryInto;
 
@@ -52,8 +48,9 @@ use crate::keys::KeyManager;
 use bridge_event_prove_circuit::boc_helper::BocFlattenData;
 use bridge_event_prove_circuit::bridge_event_prove_circuit::{
     be_bytes_to_fr, BridgeEventProveCircuit, EVENT_AMOUNT_END, EVENT_AMOUNT_START,
-    EVENT_DST_CHAIN_ID_END, EVENT_DST_CHAIN_ID_START, MAX_EVENTS_TREE_DEPTH, NUM_LAYER_HASHES,
+    EVENT_DST_CHAIN_ID_END, EVENT_DST_CHAIN_ID_START, MAX_EVENTS_TREE_DEPTH,
     RECIPIENT_HI_END, RECIPIENT_HI_START, RECIPIENT_LO_END, RECIPIENT_LO_START,
+    TOTAL_PUBLIC_INPUTS,
 };
 use bridge_event_prove_circuit::test_helpers::{
     decode_sender_account_id_from_cell, nullifier_native,
@@ -220,27 +217,14 @@ pub fn build_proof_inputs(
         );
     }
 
-    let layer_hashes = decode_layer_hashes(&anchor.layer_hashes_public_hex)?;
-    let hash_choice_index = anchor.hash_choice_index as usize;
-    if hash_choice_index >= NUM_LAYER_HASHES {
-        bail!(
-            "anchor.hash_choice_index={hash_choice_index} out of range [0, {NUM_LAYER_HASHES})"
-        );
-    }
-    // Sanity-check the chosen slot matches the daemon's stated layer_hash_hex.
-    let chosen = parse_hex_array::<32>("anchor.layer_hash_hex", &anchor.layer_hash_hex)?;
-    let chosen_fr = bytes_to_fr(&chosen);
-    if layer_hashes[hash_choice_index] != chosen_fr {
-        bail!(
-            "anchor.layer_hash_hex does not match layer_hashes_public_hex[{hash_choice_index}] — daemon supplied inconsistent anchor"
-        );
-    }
+    let final_root_bytes = parse_hex_array::<32>("anchor.layer_hash_hex", &anchor.layer_hash_hex)?;
+    let final_root_fr = bytes_to_fr(&final_root_bytes);
 
-    // 9-slot leading public-instance layout (see
+    // 10-slot public-instance layout (see
     // `bridge-event-prove-circuit::bridge_event_prove_circuit` PUB_* constants):
     //   [0] token_id, [1] amount, [2] recipient_hi, [3] recipient_lo,
     //   [4] dst_chain_id, [5] sender_acc_fr, [6] dapp_fr, [7] acc_fr,
-    //   [8] nullifier, then NUM_LAYER_HASHES layer hashes.
+    //   [8] nullifier, [9] final_root.
     let body = &entries[1].cell_repr_data;
     let recipient_payload = &entries[2].cell_repr_data;
     let sender_payload = &entries[3].cell_repr_data;
@@ -266,7 +250,7 @@ pub fn build_proof_inputs(
         sender_acc_fr,
     );
 
-    let mut public_instances = Vec::with_capacity(9 + NUM_LAYER_HASHES);
+    let mut public_instances = Vec::with_capacity(TOTAL_PUBLIC_INPUTS);
     public_instances.push(token_id_fr);
     public_instances.push(amount_fr);
     public_instances.push(recipient_hi_fr);
@@ -276,7 +260,7 @@ pub fn build_proof_inputs(
     public_instances.push(dapp_fr);
     public_instances.push(acc_fr);
     public_instances.push(nullifier_fr);
-    public_instances.extend_from_slice(&layer_hashes);
+    public_instances.push(final_root_fr);
 
     let circuit = BridgeEventProveCircuit::new(
         entries,
@@ -290,8 +274,6 @@ pub fn build_proof_inputs(
         block_pos,
         dense_chain,
         num_active_chain_steps,
-        layer_hashes,
-        hash_choice_index,
         base_circuit_params,
     );
 
@@ -299,23 +281,6 @@ pub fn build_proof_inputs(
         circuit,
         public_instances,
     })
-}
-
-/// Decode `layer_hashes_public_hex` into `NUM_LAYER_HASHES` Fr elements
-/// (little-endian byte order, same convention `bytes_to_fr` uses).
-fn decode_layer_hashes(hex_list: &[String]) -> Result<Vec<Fr>> {
-    if hex_list.len() != NUM_LAYER_HASHES {
-        bail!(
-            "anchor.layer_hashes_public_hex length {} != NUM_LAYER_HASHES ({NUM_LAYER_HASHES})",
-            hex_list.len(),
-        );
-    }
-    let mut out = Vec::with_capacity(NUM_LAYER_HASHES);
-    for (i, s) in hex_list.iter().enumerate() {
-        let bytes = parse_hex_array::<32>(&format!("layer_hashes_public_hex[{i}]"), s)?;
-        out.push(bytes_to_fr(&bytes));
-    }
-    Ok(out)
 }
 
 /// Token ID is `BE_pack(body[54..58))` — same derivation as
@@ -340,10 +305,10 @@ fn derive_token_id_fr(body: &BocFlattenData) -> Result<Fr> {
 /// Output of a Circuit 4 proof generation pass.
 ///
 /// `proof_bytes` is the SHPLONK/Blake2b-encoded proof; `public_instances`
-/// is the 9-slot leading vector
+/// is the 10-slot vector
 /// `[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
-/// sender_acc_fr, dapp_fr, acc_fr, nullifier]` followed by the layer
-/// hashes — what the verifier (or the on-chain bridge) checks against.
+/// sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root]` — what the
+/// verifier (or the on-chain bridge) checks against.
 #[derive(Clone)]
 pub struct EventProofOutput {
     pub proof_bytes: Vec<u8>,

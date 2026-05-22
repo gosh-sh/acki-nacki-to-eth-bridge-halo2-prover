@@ -320,9 +320,9 @@ impl KeyManager {
     /// Keygen uses the deterministic synthetic-witness path exposed by
     /// `bridge-event-prove-circuit::test_helpers::build_synthetic_event_keygen_inputs`,
     /// which composes the embedded `withdrawals.txt` first record + a random
-    /// two-level tree + a T=1 dense chain + planted layer hashes. The
-    /// produced circuit's constraint system is independent of these witness
-    /// values, so the VK/PK shape is stable across machines and CI runs.
+    /// two-level tree + a T=1 dense chain. The produced circuit's constraint
+    /// system is independent of these witness values, so the VK/PK shape is
+    /// stable across machines and CI runs.
     pub fn ensure_event_keys(&mut self) -> anyhow::Result<()> {
         if self.event_vk.is_some() && self.pk_path("event").exists() {
             info!("event keys already available (VK in memory, PK on disk)");

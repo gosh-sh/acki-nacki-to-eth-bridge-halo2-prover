@@ -22,9 +22,8 @@
 //!     so 4-deep proofs). Same layout `bridge-prover-lib::real_chain_builder
 //!     ::build_layer1_tree` uses.
 //!   * `anchor` — references the L1 layer hash the verifier has mirrored
-//!     for the key block containing this event. Carries the flattened
-//!     `NUM_LAYER_HASHES` candidate vector (the public input), the chosen
-//!     layer hash, the `hash_choice_index` into that vector, and the
+//!     for the key block containing this event. Carries the chosen layer
+//!     hash (the value the circuit publishes as `PUB_FINAL_ROOT`) and the
 //!     `dense_chain` (here 0 active steps, just inactive padding to
 //!     `MAX_CHAIN_LEN` — the L1 root *is* the chosen layer hash, so no
 //!     hops up to a higher layer are needed).
@@ -66,7 +65,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use tracing::{error, info, warn};
 
-use bridge_prover_lib::bridge_state::{BridgeState, MAX_LAYERS};
+use bridge_prover_lib::bridge_state::BridgeState;
 use bridge_prover_lib::chain_proof_builder::{
     build_tree_and_proof, compute_block_leaf_hash, pad_leaves_to_power_of_2,
 };
@@ -86,12 +85,6 @@ const HISTORY_WINDOW_SIZE: u64 =
 /// Prover-side thinning factor `P`. Re-exported from `bridge_prover_lib`
 /// so the witness builder uses the same value as the prover daemon.
 const THINNING_FACTOR_P: u64 = bridge_prover_lib::THINNING_FACTOR_P;
-
-/// `NUM_LAYER_HASHES = MAX_LAYERS * W` — must match the circuit's
-/// compile-time constant. Derives from `MAX_LAYERS` and the node-side
-/// `HISTORY_PROOF_WINDOW_SIZE` so test/production W switch is a one-line
-/// change in `node-block-client::history_proof`.
-const NUM_LAYER_HASHES: usize = MAX_LAYERS * HISTORY_WINDOW_SIZE as usize;
 
 const DEFAULT_VERIFIER_STATE: &str = "./state/verifier_state.json";
 const DEFAULT_GQL_ENDPOINT: &str = "http://localhost/graphql";
@@ -182,7 +175,6 @@ struct OutputSummary<'a> {
     block_seq_no: u64,
     key_block_seq_no: u64,
     layer_idx: u32,
-    hash_choice_index: u32,
     layer_hash_hex: &'a str,
     events_tree_depth: usize,
     block_tree_depth: usize,
@@ -383,23 +375,20 @@ async fn run() -> Result<()> {
     })?;
     info!("L1 slot for this key block: {}", l1_slot);
 
-    // The flattened layer-hash vector layout is:
-    //   layer 1 chronological slots, padded to W zeros, then layer 2
-    //   chronological slots, padded to W zeros, ... up to MAX_LAYERS.
-    // So hash_choice_index for an L1 slot is simply `l1_slot` (layer 1's
-    // chronological position within the flat vector starts at 0).
-    let hash_choice_index = l1_slot as u32;
-
-    let layer_hashes_flat = state.flatten_layer_hashes();
-    if layer_hashes_flat.len() != NUM_LAYER_HASHES {
-        bail!(
-            "verifier state produced {} layer hashes but circuit expects {NUM_LAYER_HASHES}",
-            layer_hashes_flat.len(),
-        );
-    }
-    let layer_hashes_public_hex: Vec<String> =
-        layer_hashes_flat.iter().map(hex::encode).collect();
-    let chosen_layer_hash = layer_hashes_flat[hash_choice_index as usize];
+    // The circuit publishes a single `final_root` public input. The verifier
+    // checks this value off-circuit against its mirror of `layer_windows`,
+    // so we only need to pick the chosen layer hash here (no flattened
+    // candidate vector, no choice index).
+    let chosen_layer_hash = state.layer_windows[0]
+        .iter_chronological()
+        .nth(l1_slot)
+        .map(|(h, _)| h)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "internal: L1 slot {} found but not present when iterating chronologically",
+                l1_slot,
+            )
+        })?;
 
     if chosen_layer_hash != l1_root_self_computed {
         // Not necessarily fatal: the self-computed L1 root depends on
@@ -438,8 +427,6 @@ async fn run() -> Result<()> {
         layer_idx: args.layer_idx,
         height: key_block_height,
         layer_hash_hex: hex::encode(chosen_layer_hash),
-        layer_hashes_public_hex,
-        hash_choice_index,
         dense_chain: dense_chain_ser,
         num_active_chain_steps: 0,
     };
@@ -468,7 +455,6 @@ async fn run() -> Result<()> {
         block_seq_no: witness.block_seq_no,
         key_block_seq_no: key_block_seq,
         layer_idx: args.layer_idx,
-        hash_choice_index,
         layer_hash_hex: &witness.anchor.as_ref().unwrap().layer_hash_hex,
         events_tree_depth,
         block_tree_depth,

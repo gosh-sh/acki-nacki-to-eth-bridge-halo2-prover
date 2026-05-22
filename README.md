@@ -7,7 +7,7 @@ Ethereum bridge contract consumes. Three circuits are exercised:
 |---|---|---|
 | 1A — Primary BLS Attestation | 20 | ≥ ⌈2n/3⌉ BLS signers from the current BK set sign a block; binds `block_id` to `bk_set_poseidon`. |
 | 2 — Layer Historical Hashes  | 17 | Open the L0 Poseidon preimage in the `block_id` Merkle tree; advance `GlobalHistoryData` layer windows through a dense Poseidon chain (`MAX_CHAIN_LEN = 11`). |
-| 4 — Bridge Event Prover      | 19 | Hash a `WithdrawalInitiated` event BOC, bind it to a `Poseidon96` block leaf, climb the dense chain, anchor against the contract's `MAX_LAYERS × W` candidate hashes via a **private** index. |
+| 4 — Bridge Event Prover      | 19 | Hash a `WithdrawalInitiated` event BOC, bind it to a `Poseidon96` block leaf, climb the dense chain, and publish the resulting `final_root` as a public input — the verifier checks it off-circuit against its mirror of `layer_windows`. |
 
 Theory, security argument, contract sketch, and per-circuit witness details live in the companion repo: [`acki-nacki-to-eth-bridge-halo2-circuits/README.md`](../acki-nacki-to-eth-bridge-halo2-circuits/README.md). This README covers the **off-chain operation**: daemons, IPC, state, and how to run the full E2E test from this checkout.
 
