@@ -210,7 +210,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -221,7 +221,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -830,7 +830,7 @@ dependencies = [
 [[package]]
 name = "bridge-event-prove-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-w-parameterized#21272f7dce2e715c023ae742fa5bc748cb48c9eb"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-w-parameterized#0715e7edfd26bc602c8578b4380ccddb7f331c3b"
 dependencies = [
  "bridge-poseidon 0.1.0 (git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-w-parameterized)",
  "dense-balanced-tree",
@@ -847,8 +847,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk)",
+ "tvm_block 2.24.21",
+ "tvm_types 2.24.21",
 ]
 
 [[package]]
@@ -894,7 +894,7 @@ dependencies = [
 [[package]]
 name = "bridge-poseidon"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-w-parameterized#21272f7dce2e715c023ae742fa5bc748cb48c9eb"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=circuit4-w-parameterized#0715e7edfd26bc602c8578b4380ccddb7f331c3b"
 dependencies = [
  "gosh-bls-verification",
  "halo2-base 0.4.0",
@@ -5248,8 +5248,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_block"
-version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk#43b4de34e7abdc01401a11ba094373475e6643c8"
+version = "2.24.21"
+source = "git+https://github.com/tvmlabs/tvm-sdk#9fe59570de80d9fa8a3764edf1556e4faed040b6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5262,7 +5262,7 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk)",
+ "tvm_types 2.24.21",
 ]
 
 [[package]]
@@ -5360,8 +5360,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_types"
-version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk#43b4de34e7abdc01401a11ba094373475e6643c8"
+version = "2.24.21"
+source = "git+https://github.com/tvmlabs/tvm-sdk#9fe59570de80d9fa8a3764edf1556e4faed040b6"
 dependencies = [
  "aes",
  "anyhow",
