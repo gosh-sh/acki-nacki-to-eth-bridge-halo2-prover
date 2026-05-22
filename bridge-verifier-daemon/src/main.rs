@@ -560,8 +560,13 @@ fn write_failure(seq_no: u32, error: &str) {
 // `BridgeState.layer_windows[1..=MAX_LAYERS]` byte-for-byte. This is the
 // same check the contract sketch in
 // `acki-nacki-to-eth-bridge-halo2-circuits/README.md` lines 810-853
-// performs in `submitWithdrawalProof`. No `proven[]` map, no nullifier,
-// no recipient binding — those are documented post-verification TBD.
+// performs in `submitWithdrawalProof`. The 9 leading slots
+// (`[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
+// sender_acc_fr, dapp_fr, acc_fr, nullifier]`) are bound to the proof
+// by the circuit; the daemon currently does not yet enforce a
+// `proven[]` map against the `nullifier` slot — that, plus recipient
+// binding to the on-chain `msg.sender`, are the remaining post-
+// verification TBD items.
 
 /// On-disk schema for `proof_event_NNNNNN.json` produced by
 /// `bridge-event-prove`. Kept private (`Deserialize`-only) here so the
@@ -712,9 +717,11 @@ fn process_event_proof(
     };
 
     // Public instance layout (per `event_verifier.rs`):
-    //   [token_id, dapp_fr, acc_fr, layer_hashes[0..NUM_LAYER_HASHES]]
+    //   [token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
+    //    sender_acc_fr, dapp_fr, acc_fr, nullifier,
+    //    layer_hashes[0..NUM_LAYER_HASHES]]
     // where NUM_LAYER_HASHES = MAX_LAYERS * window_size (== 80 on W=8).
-    let expected_num_instances = 3 + MAX_LAYERS * state.window_size;
+    let expected_num_instances = 9 + MAX_LAYERS * state.window_size;
     if file.public_instances_hex.len() != expected_num_instances {
         let msg = format!(
             "expected {} public instances, got {}",
@@ -752,7 +759,7 @@ fn process_event_proof(
     debug_assert_eq!(current_hashes.len(), MAX_LAYERS * state.window_size);
     let mut mismatched_slot: Option<usize> = None;
     for (i, expected_bytes) in current_hashes.iter().enumerate() {
-        let actual_bytes: [u8; 32] = instances[3 + i].to_repr();
+        let actual_bytes: [u8; 32] = instances[9 + i].to_repr();
         if actual_bytes != *expected_bytes {
             mismatched_slot = Some(i);
             break;

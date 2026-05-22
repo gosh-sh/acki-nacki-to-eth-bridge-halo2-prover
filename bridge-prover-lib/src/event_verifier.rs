@@ -18,8 +18,10 @@ use crate::keys::KeyManager;
 
 /// Verify a Circuit 4 proof against its public instances.
 ///
-/// Instances layout (length `3 + NUM_LAYER_HASHES`):
-///   `[token_id, dapp_fr, acc_fr, layer_hashes[0..NUM_LAYER_HASHES]]`
+/// Instances layout (length `9 + NUM_LAYER_HASHES`):
+///   `[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
+///   sender_acc_fr, dapp_fr, acc_fr, nullifier,
+///   layer_hashes[0..NUM_LAYER_HASHES]]`
 ///
 /// Mirror of [`crate::layer_verifier::verify_layer_proof`] — the only
 /// differences are which `KeyManager` VK is used (event VK) and the

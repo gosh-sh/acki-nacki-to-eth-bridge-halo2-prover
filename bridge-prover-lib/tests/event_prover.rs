@@ -112,22 +112,31 @@ fn happy_path_translates_to_circuit_inputs() {
     let inputs = build_proof_inputs(&w, default_event_circuit_params())
         .expect("build_proof_inputs must succeed on fully-populated witness");
 
-    // public_instances layout: [token_id, dapp_fr, acc_fr, layer_hashes...]
-    assert_eq!(inputs.public_instances.len(), 3 + NUM_LAYER_HASHES);
+    // public_instances layout (9 leading slots, see event_verifier.rs):
+    //   [token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
+    //    sender_acc_fr, dapp_fr, acc_fr, nullifier, layer_hashes...]
+    assert_eq!(inputs.public_instances.len(), 9 + NUM_LAYER_HASHES);
     assert_eq!(inputs.public_instances[0], Fr::from(EXPECTED_TOKEN_ID as u64));
 
-    // dapp_fr / acc_fr come from `bytes_to_fr(LE)` of the supplied 32B blobs;
-    // we don't recompute them here, but we *do* assert they're distinct from
-    // the zero-byte default so we know the translation actually ran.
-    assert_ne!(inputs.public_instances[1], Fr::zero());
-    assert_ne!(inputs.public_instances[2], Fr::zero());
+    // The remaining 8 leading slots come from BE/LE byte-packing of the
+    // fixture data; we don't recompute them here, but we assert they're
+    // distinct from the zero-byte default so we know the translation
+    // actually ran. (Slots 1..=8 are amount, recipient_hi, recipient_lo,
+    // dst_chain_id, sender_acc_fr, dapp_fr, acc_fr, nullifier.)
+    for slot in 1..9 {
+        assert_ne!(
+            inputs.public_instances[slot],
+            Fr::zero(),
+            "leading public-instance slot {slot} must be non-zero with our fixture seeding"
+        );
+    }
 
-    // Layer hashes start at index 3 and must all be present.
+    // Layer hashes start at index 9 and must all be present.
     for i in 0..NUM_LAYER_HASHES {
         // The chosen slot must equal a Fr decoded from anchor.layer_hash_hex —
         // i.e. all slots are non-zero given our 0x01-onward seeding.
         assert_ne!(
-            inputs.public_instances[3 + i],
+            inputs.public_instances[9 + i],
             Fr::zero(),
             "layer_hashes[{i}] must be non-zero with our fixture seeding"
         );

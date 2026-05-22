@@ -8,9 +8,10 @@
 //! Two responsibilities:
 //!   1. **Input conversion** — deserialize the witness JSON, hex-decode
 //!      cell records, and assemble a `BridgeEventProveCircuit` instance.
-//!   2. **Public instance derivation** — build the
-//!      `[token_id, dapp_fr, acc_fr, layer_hashes...]` instance vector
-//!      the verifier will need.
+//!   2. **Public instance derivation** — build the 9-slot leading vector
+//!      `[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
+//!      sender_acc_fr, dapp_fr, acc_fr, nullifier]` followed by the
+//!      `NUM_LAYER_HASHES` anchor slots that the verifier will need.
 //!
 //! Keygen / real-prover plumbing is deliberately **not** wired in here yet.
 //! The daemon (Track D) will own that — same on-demand PK loading pattern
@@ -50,7 +51,12 @@ use crate::keys::KeyManager;
 
 use bridge_event_prove_circuit::boc_helper::BocFlattenData;
 use bridge_event_prove_circuit::bridge_event_prove_circuit::{
-    BridgeEventProveCircuit, MAX_EVENTS_TREE_DEPTH, NUM_LAYER_HASHES,
+    be_bytes_to_fr, BridgeEventProveCircuit, EVENT_AMOUNT_END, EVENT_AMOUNT_START,
+    EVENT_DST_CHAIN_ID_END, EVENT_DST_CHAIN_ID_START, MAX_EVENTS_TREE_DEPTH, NUM_LAYER_HASHES,
+    RECIPIENT_HI_END, RECIPIENT_HI_START, RECIPIENT_LO_END, RECIPIENT_LO_START,
+};
+use bridge_event_prove_circuit::test_helpers::{
+    decode_sender_account_id_from_cell, nullifier_native,
 };
 
 // Re-export so consumers can construct circuit params without an extra dep.
@@ -230,14 +236,46 @@ pub fn build_proof_inputs(
         );
     }
 
+    // 9-slot leading public-instance layout (see
+    // `bridge-event-prove-circuit::bridge_event_prove_circuit` PUB_* constants):
+    //   [0] token_id, [1] amount, [2] recipient_hi, [3] recipient_lo,
+    //   [4] dst_chain_id, [5] sender_acc_fr, [6] dapp_fr, [7] acc_fr,
+    //   [8] nullifier, then NUM_LAYER_HASHES layer hashes.
+    let body = &entries[1].cell_repr_data;
+    let recipient_payload = &entries[2].cell_repr_data;
+    let sender_payload = &entries[3].cell_repr_data;
+
     let token_id_fr = derive_token_id_fr(&entries[1])?;
+    let amount_fr = be_bytes_to_fr(&body[EVENT_AMOUNT_START..EVENT_AMOUNT_END]);
+    let dst_chain_id_fr = be_bytes_to_fr(&body[EVENT_DST_CHAIN_ID_START..EVENT_DST_CHAIN_ID_END]);
+    let recipient_hi_fr =
+        be_bytes_to_fr(&recipient_payload[RECIPIENT_HI_START..RECIPIENT_HI_END]);
+    let recipient_lo_fr =
+        be_bytes_to_fr(&recipient_payload[RECIPIENT_LO_START..RECIPIENT_LO_END]);
+    let sender_account_id = decode_sender_account_id_from_cell(sender_payload);
+    let sender_acc_fr = bytes_to_fr(&sender_account_id);
     let dapp_fr = bytes_to_fr(&account_dapp_id);
     let acc_fr = bytes_to_fr(&account_id);
+    let block_id_fr = bytes_to_fr(&block_id);
+    let nullifier_fr = nullifier_native(
+        block_id_fr,
+        token_id_fr,
+        amount_fr,
+        recipient_hi_fr,
+        recipient_lo_fr,
+        sender_acc_fr,
+    );
 
-    let mut public_instances = Vec::with_capacity(3 + NUM_LAYER_HASHES);
+    let mut public_instances = Vec::with_capacity(9 + NUM_LAYER_HASHES);
     public_instances.push(token_id_fr);
+    public_instances.push(amount_fr);
+    public_instances.push(recipient_hi_fr);
+    public_instances.push(recipient_lo_fr);
+    public_instances.push(dst_chain_id_fr);
+    public_instances.push(sender_acc_fr);
     public_instances.push(dapp_fr);
     public_instances.push(acc_fr);
+    public_instances.push(nullifier_fr);
     public_instances.extend_from_slice(&layer_hashes);
 
     let circuit = BridgeEventProveCircuit::new(
@@ -302,8 +340,10 @@ fn derive_token_id_fr(body: &BocFlattenData) -> Result<Fr> {
 /// Output of a Circuit 4 proof generation pass.
 ///
 /// `proof_bytes` is the SHPLONK/Blake2b-encoded proof; `public_instances`
-/// is the `[token_id, dapp_fr, acc_fr, layer_hashes...]` vector the verifier
-/// (or the on-chain bridge) checks against.
+/// is the 9-slot leading vector
+/// `[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
+/// sender_acc_fr, dapp_fr, acc_fr, nullifier]` followed by the layer
+/// hashes — what the verifier (or the on-chain bridge) checks against.
 #[derive(Clone)]
 pub struct EventProofOutput {
     pub proof_bytes: Vec<u8>,
