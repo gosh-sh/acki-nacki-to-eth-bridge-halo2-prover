@@ -33,7 +33,20 @@ use bridge_prover_lib::layer_prover;
 use bridge_prover_lib::poseidon;
 use bridge_prover_lib::prover;
 
-const GQL_ENDPOINT: &str = "http://localhost/graphql";
+/// Default GraphQL endpoint when `BRIDGE_GQL_ENDPOINT` is not set. Targets a
+/// local Docker devnet running `make run` in the acki-nacki repo. For shellnet
+/// or any other deployment set `BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql`.
+const DEFAULT_GQL_ENDPOINT: &str = "http://localhost/graphql";
+
+/// Env var: overrides [`DEFAULT_GQL_ENDPOINT`]. Read once at startup.
+const ENV_GQL_ENDPOINT: &str = "BRIDGE_GQL_ENDPOINT";
+
+/// Env var: explicit mid-chain bootstrap seed seqno. When set, the daemon
+/// skips the auto-latest discovery loop and seeds directly from this block.
+/// Value MUST be > 0 and divisible by `W * P` (= [`HISTORY_WINDOW_SIZE`] *
+/// [`THINNING_FACTOR_P`]), so the first proven target sits exactly one bundle
+/// later — same spacing as steady state.
+const ENV_BOOTSTRAP_SEQNO: &str = "BRIDGE_BOOTSTRAP_SEQNO";
 
 // History window size — imported from the node-block-client crate so it can
 // never drift from the node. To change the window size, edit
@@ -75,11 +88,37 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all("state").ok();
     ipc::ensure_proofs_dir();
 
+    // Env-driven config — no CLI parser needed (only two knobs). Both read
+    // once at startup and logged for the operator's benefit.
+    let gql_endpoint = std::env::var(ENV_GQL_ENDPOINT)
+        .unwrap_or_else(|_| DEFAULT_GQL_ENDPOINT.to_string());
+    let bundle_size = HISTORY_WINDOW_SIZE * THINNING_FACTOR_P;
+    let explicit_bootstrap_seqno: Option<u64> = match std::env::var(ENV_BOOTSTRAP_SEQNO) {
+        Ok(v) => {
+            let n: u64 = v.parse().with_context(|| {
+                format!("{} must be a positive integer, got {:?}", ENV_BOOTSTRAP_SEQNO, v)
+            })?;
+            anyhow::ensure!(
+                n > 0 && n % bundle_size == 0,
+                "{}={} must be > 0 and divisible by W*P={}",
+                ENV_BOOTSTRAP_SEQNO,
+                n,
+                bundle_size
+            );
+            Some(n)
+        }
+        Err(_) => None,
+    };
+
     info!("=== Bridge Prover Daemon (Circuit 1a + Circuit 2) ===");
-    info!("GQL endpoint: {}", GQL_ENDPOINT);
+    info!("GQL endpoint: {}", gql_endpoint);
     info!("history window size: W = {}", HISTORY_WINDOW_SIZE);
     info!("thinning factor:     P = {} (prove every {}-th key block, bundle = {} blocks)",
-          THINNING_FACTOR_P, THINNING_FACTOR_P, HISTORY_WINDOW_SIZE * THINNING_FACTOR_P);
+          THINNING_FACTOR_P, THINNING_FACTOR_P, bundle_size);
+    match explicit_bootstrap_seqno {
+        Some(n) => info!("bootstrap mode: EXPLICIT seed seqno = {} (from {})", n, ENV_BOOTSTRAP_SEQNO),
+        None    => info!("bootstrap mode: AUTO-LATEST (seed at next W*P-aligned key block after chain head)"),
+    }
     info!("running indefinitely; send SIGINT (Ctrl-C) to shut down cleanly");
 
     // Graceful-shutdown flag flipped by the Ctrl-C handler. Checked at the top
@@ -96,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 1. Connect to node.
-    let gql = gql_client::create_client(GQL_ENDPOINT)?;
+    let gql = gql_client::create_client(&gql_endpoint)?;
     info!("GraphQL client created");
 
     // 2. Fetch BK set.
@@ -116,41 +155,72 @@ async fn main() -> anyhow::Result<()> {
     let mut state = BridgeState::load(STATE_FILE, HISTORY_WINDOW_SIZE as usize)?;
     info!("state loaded: initialized={}, last_key_block={}", state.initialized, state.stored_last_seen_block_seq_no);
 
-    // 5. If not initialized, derive bootstrap seed from the first key block
-    //    and persist it for the verifier.
+    // 5. If not initialized, derive bootstrap seed from a key block and persist
+    //    it for the verifier.
     //
     //    The prover plays the role of the "deployer" in the production analog:
-    //    it queries the node for the first key block envelope, applies the seed
-    //    to its own state, AND writes `state/bootstrap_seed.json` so the
+    //    it queries the node for the chosen key block's envelope, applies the
+    //    seed to its own state, AND writes `state/bootstrap_seed.json` so the
     //    verifier (which has no node connection) can mirror the same L1 entry.
     //    See `bridge_prover_lib::bootstrap` for the full rationale.
+    //
+    //    Seed seqno selection:
+    //      - Explicit (env BRIDGE_BOOTSTRAP_SEQNO=N): use N directly. Already
+    //        validated above to be > 0 and divisible by W*P.
+    //      - Auto: round chain head UP to the next multiple of W*P, then wait
+    //        for the chain to reach it. This is the shellnet / mid-chain mode:
+    //        no need to walk back to genesis, and the first proven target sits
+    //        exactly one bundle (W*P blocks) past the seed — same spacing as
+    //        steady state, so no asymmetric "first bundle" gap.
     if !state.initialized {
-        info!("waiting for first key block (height >= {})...", HISTORY_WINDOW_SIZE);
         let bk_hash_bytes: [u8; 32] = bk_set_commitment.to_repr();
+
+        // Pick the seed seqno ONCE here, before entering the wait loop. In auto
+        // mode we pin it to the next W*P boundary strictly past the current
+        // chain head; recomputing inside the loop would let the target chase
+        // the head every time it crossed a boundary and the daemon would never
+        // start. In explicit mode it's already fixed by env var.
+        let seed_seqno = match explicit_bootstrap_seqno {
+            Some(n) => n,
+            None    => {
+                let blocks = gql.query_latest_blocks(5).await?;
+                let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
+                let n = ((latest_seq / bundle_size) + 1) * bundle_size;
+                info!("auto-mode: chain head at seq_no={}, pinned seed seq_no={}", latest_seq, n);
+                n
+            }
+        };
+
         let seed: BootstrapSeed = loop {
             let blocks = gql.query_latest_blocks(5).await?;
             let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
-            if latest_seq >= HISTORY_WINDOW_SIZE {
-                let first_key_seqno = HISTORY_WINDOW_SIZE;
-                info!("first key block available at seq_no {}", first_key_seqno);
-                match bootstrap::fetch_from_node(&gql, first_key_seqno, bk_hash_bytes).await {
-                    Ok(s) => {
-                        info!(
-                            "first key block: {} history_proofs layers, block_height={}",
-                            s.layer_hashes.len(),
-                            s.block_height,
-                        );
-                        break s;
-                    }
-                    Err(e) => {
-                        warn!("could not fetch first key block envelope ({}), retrying...", e);
-                        tokio::time::sleep(POLL_INTERVAL).await;
-                        continue;
-                    }
+
+            if latest_seq < seed_seqno {
+                info!(
+                    "latest block seq_no={}, waiting for chain to reach seed seq_no={} ({} blocks to go)...",
+                    latest_seq, seed_seqno, seed_seqno - latest_seq
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+                continue;
+            }
+
+            info!("seed key block available at seq_no {} (chain head at {})", seed_seqno, latest_seq);
+            match bootstrap::fetch_from_node(&gql, seed_seqno, bk_hash_bytes).await {
+                Ok(s) => {
+                    info!(
+                        "seed block: {} history_proofs layers, block_height={}",
+                        s.layer_hashes.len(),
+                        s.block_height,
+                    );
+                    break s;
+                }
+                Err(e) => {
+                    warn!("could not fetch seed key block envelope at seq_no={} ({}), retrying...",
+                          seed_seqno, e);
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                    continue;
                 }
             }
-            info!("latest block: {}, waiting for height {}...", latest_seq, HISTORY_WINDOW_SIZE);
-            tokio::time::sleep(POLL_INTERVAL).await;
         };
 
         seed.apply(&mut state);
@@ -433,9 +503,10 @@ async fn main() -> anyhow::Result<()> {
 /// The daemon advances in steps of `W * P` blocks: it proves only every
 /// `P`-th master key block, with each Circuit 2 bundle internally chaining
 /// `P` consecutive layer-1 windows via `verify_chain_of_dense_proofs`.
-/// The bootstrap step is at `seq = W` (a single W-aligned root applied by
-/// the bootstrap seed); from there the first thinned target is `W*P`, then
-/// `2*W*P`, etc.
+/// The bootstrap seed sits on a `W*P`-aligned key block (either chosen
+/// explicitly via `BRIDGE_BOOTSTRAP_SEQNO` or computed as the next `W*P`
+/// boundary past chain head in auto mode); from there the first thinned
+/// target is `seed + W*P`, then `seed + 2*W*P`, etc. — symmetric spacing.
 fn find_next_thinned_key_block(
     last_key_seqno: u64,
     latest_seqno: u64,

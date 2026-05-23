@@ -29,7 +29,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// How often to log a heartbeat summary while the loop is running.
 const STATS_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const STATE_FILE: &str = "./state/verifier_state.json";
-const GQL_ENDPOINT: &str = "http://localhost/graphql";
+/// Default GraphQL endpoint when `BRIDGE_GQL_ENDPOINT` is not set. Same env
+/// var the prover daemon honours, so a single export in the shell selects the
+/// network for both daemons. Used only by [`load_bk_set_commitment`] — the
+/// verifier has no other GQL traffic; bk_set.json is the fallback if GQL is
+/// unreachable.
+const DEFAULT_GQL_ENDPOINT: &str = "http://localhost/graphql";
+const ENV_GQL_ENDPOINT: &str = "BRIDGE_GQL_ENDPOINT";
 const BK_SET_CONFIG: &str = "./bk_set.json";
 
 // History window size — must match the prover daemon and the node. Sourced
@@ -67,7 +73,11 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all("state").ok();
     ipc::ensure_proofs_dir();
 
+    let gql_endpoint = std::env::var(ENV_GQL_ENDPOINT)
+        .unwrap_or_else(|_| DEFAULT_GQL_ENDPOINT.to_string());
+
     info!("=== Bridge Verifier Daemon (Circuit 1a + Circuit 2) ===");
+    info!("GQL endpoint: {} (BK-set fetch only; falls back to {})", gql_endpoint, BK_SET_CONFIG);
     info!("running indefinitely; send SIGINT (Ctrl-C) to shut down cleanly");
 
     // Graceful-shutdown flag flipped by the Ctrl-C handler. Checked at the top
@@ -84,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // 1. Load BK set commitment (for Circuit 1a verification reference).
-    let bk_set_commitment = load_bk_set_commitment().await?;
+    let bk_set_commitment = load_bk_set_commitment(&gql_endpoint).await?;
     info!("BK set commitment: {:?}", bk_set_commitment);
 
     // 2. Load key manager (SRS + VKs only, no PKs needed).
@@ -498,8 +508,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn load_bk_set_commitment() -> anyhow::Result<Fr> {
-    let bk_set = match bridge_prover_lib::gql_client::create_client(GQL_ENDPOINT) {
+async fn load_bk_set_commitment(gql_endpoint: &str) -> anyhow::Result<Fr> {
+    let bk_set = match bridge_prover_lib::gql_client::create_client(gql_endpoint) {
         Ok(gql) => match bridge_prover_lib::bk_set_fetcher::fetch_bk_set(&gql).await {
             Ok(bk) => {
                 info!("BK set loaded from GraphQL: {} signers", bk.len());
