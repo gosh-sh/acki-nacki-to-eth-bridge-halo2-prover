@@ -43,7 +43,7 @@ use rand::rngs::OsRng;
 use tracing::info;
 use gosh_dense_balanced_tree::{bytes_to_fr, DenseChainLink, MAX_CHAIN_LEN};
 
-use crate::keys::KeyManager;
+use bridge_prover_lib::keys::KeyManager;
 
 use bridge_event_prove_circuit::boc_helper::BocFlattenData;
 use bridge_event_prove_circuit::bridge_event_prove_circuit::{

@@ -2,8 +2,8 @@
 //!
 //! Producers: `bridge-event-private-witness-export` (Rust binary + library),
 //! eventually also the Python orchestration driver.
-//! Consumers: `bridge_prover_lib::event_prover` (Track C), the future
-//! `bridge-event-prover-daemon` (Track D).
+//! Consumers: `bridge_event_prover_lib` (Track C), the
+//! `bridge-event-halo2-prover` one-shot CLI (Track D).
 //!
 //! The schema is intentionally JSON-friendly: byte arrays are lowercase hex,
 //! all integers fit in u64 or u128. Pinned `schema_version` so producer and

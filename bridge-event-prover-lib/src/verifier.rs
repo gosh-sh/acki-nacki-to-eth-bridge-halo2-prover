@@ -14,7 +14,7 @@ use halo2_base::halo2_proofs::{
     transcript::{Blake2bRead, Challenge255, TranscriptReadBuffer},
 };
 
-use crate::keys::KeyManager;
+use bridge_prover_lib::keys::KeyManager;
 
 /// Verify a Circuit 4 proof against its public instances.
 ///

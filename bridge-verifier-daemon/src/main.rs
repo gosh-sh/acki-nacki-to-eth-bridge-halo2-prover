@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 
 use bridge_prover_lib::bootstrap::{self, BootstrapSeed};
 use bridge_prover_lib::bridge_state::{BridgeState, MAX_LAYERS};
-use bridge_prover_lib::event_verifier;
+use bridge_event_prover_lib as event_verifier;
 use bridge_prover_lib::ipc;
 use bridge_prover_lib::keys::KeyManager;
 use bridge_prover_lib::layer_verifier;

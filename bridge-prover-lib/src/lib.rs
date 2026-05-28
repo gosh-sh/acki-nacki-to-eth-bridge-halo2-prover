@@ -15,8 +15,6 @@ pub mod chain_proof_builder;
 pub mod real_chain_builder;
 pub mod layer_prover;
 pub mod layer_verifier;
-pub mod event_prover;
-pub mod event_verifier;
 
 // Re-export commonly used types.
 pub use halo2_base::halo2_proofs::halo2curves::bn256::Fr;

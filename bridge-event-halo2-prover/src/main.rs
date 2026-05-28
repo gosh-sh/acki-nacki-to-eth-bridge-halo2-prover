@@ -34,10 +34,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 use bridge_event_prove_circuit::test_helpers::build_synthetic_event_keygen_inputs;
-use bridge_prover_lib::event_prover::{
-    generate_event_proof, generate_event_proof_from_circuit, EventProofOutput, PrivateWitness,
-};
-use bridge_prover_lib::event_verifier::verify_event_proof;
+use bridge_event_prover_lib::{EventProofOutput, EventProver, PrivateWitness};
 use bridge_prover_lib::keys::KeyManager;
 
 const PARAMS_DIR: &str = "./params";
@@ -157,15 +154,15 @@ fn run() -> Result<()> {
     info!("params_dir: {PARAMS_DIR}");
 
     let mut km = KeyManager::new(Path::new(PARAMS_DIR));
-    km.ensure_event_keys()
-        .context("ensure_event_keys failed")?;
-    km.load_event_pk().context("load_event_pk failed")?;
+    let mut event_prover = EventProver::new(&mut km);
+    event_prover.ensure_keys().context("ensure_event_keys failed")?;
+    event_prover.load_pk().context("load_event_pk failed")?;
 
     let t_proof = Instant::now();
     let out: EventProofOutput = if args.selftest {
         info!("synthesising inputs via build_synthetic_event_keygen_inputs(seed={SELFTEST_SEED:#x})");
         let (circuit, instances) = build_synthetic_event_keygen_inputs(SELFTEST_SEED);
-        generate_event_proof_from_circuit(&km, circuit, instances)?
+        event_prover.prove_circuit(circuit, instances)?
     } else {
         let fixture_path = args.fixture.as_ref().expect("checked in parse");
         info!("reading PrivateWitness from {}", fixture_path.display());
@@ -173,15 +170,15 @@ fn run() -> Result<()> {
             .with_context(|| format!("failed to read {}", fixture_path.display()))?;
         let witness: PrivateWitness = serde_json::from_str(&raw)
             .with_context(|| format!("failed to parse PrivateWitness JSON from {}", fixture_path.display()))?;
-        generate_event_proof(&km, &witness)?
+        event_prover.prove(&witness)?
     };
     let event_proof_gen_ms = t_proof.elapsed().as_millis() as u64;
     info!("Circuit 4 proof generated in {} ms", event_proof_gen_ms);
 
     // Self-verify before unloading PK — catches gross misconfiguration
     // (wrong VK, mismatched config, etc.) before the orchestrator has to.
-    let ok = verify_event_proof(&km, &out.proof_bytes, &out.public_instances);
-    km.unload_event_pk();
+    let ok = event_prover.verify(&out.proof_bytes, &out.public_instances);
+    event_prover.unload_pk();
     if !ok {
         bail!("self-verification of the freshly generated proof FAILED");
     }

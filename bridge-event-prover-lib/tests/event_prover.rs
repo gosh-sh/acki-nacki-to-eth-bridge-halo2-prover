@@ -1,4 +1,4 @@
-//! Plumbing tests for `bridge_prover_lib::event_prover::build_proof_inputs`.
+//! Plumbing tests for `bridge_event_prover_lib::build_proof_inputs`.
 //!
 //! The Circuit-4 MockProver test that *exercises constraint satisfaction*
 //! already lives in the upstream circuits crate
@@ -16,7 +16,7 @@ use bridge_event_private_witness_export::{
     BlockContextInput,
 };
 use bridge_event_prove_circuit::bridge_event_prove_circuit::TOTAL_PUBLIC_INPUTS;
-use bridge_prover_lib::event_prover::{build_proof_inputs, default_event_circuit_params};
+use bridge_event_prover_lib::{build_proof_inputs, default_event_circuit_params};
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 
 // Reused from the golden_withdrawal.rs fixture — first record of the

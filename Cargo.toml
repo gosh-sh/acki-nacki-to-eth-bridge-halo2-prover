@@ -4,7 +4,8 @@ members = [
     "bridge-prover-daemon",
     "bridge-verifier-daemon",
     "bridge-event-private-witness-export",
-    "bridge-event-prove-daemon",
+    "bridge-event-prover-lib",
+    "bridge-event-halo2-prover",
     "bridge-event-witness-builder",
 ]
 resolver = "2"
@@ -54,6 +55,7 @@ rand = "0.8"
 
 # Local crates
 bridge-prover-lib = { path = "bridge-prover-lib" }
+bridge-event-prover-lib = { path = "bridge-event-prover-lib" }
 
 [patch.crates-io]
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main" }

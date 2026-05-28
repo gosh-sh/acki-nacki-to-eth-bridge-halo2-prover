@@ -5,7 +5,7 @@ edition = "2021"
 
 # Exports the per-transaction private witness data Circuit 4 needs to prove a
 # `WithdrawalInitiated` event from TokenBridge.sol. Produces a JSON file
-# (schema_version-pinned) consumed by `bridge_prover_lib::event_prover`.
+# (schema_version-pinned) consumed by `bridge_event_prover_lib`.
 #
 # Modeled after dark_dex_halo2_private_witness_export_lib in concept, but
 # implemented fresh against the current prover-repo dependencies. No halo2

@@ -31,8 +31,8 @@ dependencies = [
  "tempfile",
  "tracing",
  "trie-map",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
+ "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
+ "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
 ]
 
 [[package]]
@@ -812,6 +812,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-event-halo2-prover"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bridge-event-prove-circuit",
+ "bridge-event-prover-lib",
+ "bridge-prover-lib",
+ "halo2-base 0.4.0",
+ "hex",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber 0.3.23",
+]
+
+[[package]]
 name = "bridge-event-private-witness-export"
 version = "0.1.0"
 dependencies = [
@@ -852,18 +868,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "bridge-event-prove-daemon"
+name = "bridge-event-prover-lib"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bridge-event-private-witness-export",
  "bridge-event-prove-circuit",
  "bridge-prover-lib",
+ "gosh-dense-balanced-tree",
  "halo2-base 0.4.0",
  "hex",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "tracing",
- "tracing-subscriber 0.3.23",
 ]
 
 [[package]]
@@ -930,7 +948,6 @@ dependencies = [
  "attestation-bls-checker-circuit",
  "base64 0.22.1",
  "bincode",
- "bridge-event-private-witness-export",
  "bridge-event-prove-circuit",
  "bridge-parsers",
  "bridge-poseidon",
@@ -979,6 +996,7 @@ name = "bridge-verifier-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bridge-event-prover-lib",
  "bridge-prover-lib",
  "halo2-base 0.4.0",
  "hex",
@@ -3108,9 +3126,9 @@ dependencies = [
  "serde_with",
  "sha2 0.10.9",
  "tracing",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
- "tvm_vm 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
+ "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
+ "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
+ "tvm_vm 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
  "typed-builder",
  "versioned_struct",
 ]
@@ -3124,8 +3142,8 @@ dependencies = [
  "hex",
  "serde",
  "serde_with",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
+ "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
+ "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
 ]
 
 [[package]]
@@ -5163,7 +5181,7 @@ dependencies = [
 [[package]]
 name = "tvm_abi"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit#6276f0e7ac862a5f503d6db3ee2a1448244430d4"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization#5470573f85185710c150cbbb183b16d4655ad9c9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5173,8 +5191,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
+ "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
+ "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
 ]
 
 [[package]]
@@ -5219,7 +5237,7 @@ dependencies = [
 [[package]]
 name = "tvm_block"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit#6276f0e7ac862a5f503d6db3ee2a1448244430d4"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization#5470573f85185710c150cbbb183b16d4655ad9c9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5232,7 +5250,7 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
+ "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
 ]
 
 [[package]]
@@ -5319,7 +5337,7 @@ dependencies = [
 [[package]]
 name = "tvm_types"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit#6276f0e7ac862a5f503d6db3ee2a1448244430d4"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization#5470573f85185710c150cbbb183b16d4655ad9c9"
 dependencies = [
  "aes",
  "anyhow",
@@ -5501,7 +5519,7 @@ dependencies = [
 [[package]]
 name = "tvm_vm"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit#6276f0e7ac862a5f503d6db3ee2a1448244430d4"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization#5470573f85185710c150cbbb183b16d4655ad9c9"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -5550,9 +5568,9 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tvm_abi 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_test_with_final_halo2_circuit)",
+ "tvm_abi 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
+ "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
+ "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit_historical_layer_hashes_choice_anonymization)",
  "typenum",
  "zstd",
 ]
