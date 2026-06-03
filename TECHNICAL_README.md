@@ -17,10 +17,10 @@ Theory, circuit witnesses, contract sketch: see [`acki-nacki-to-eth-bridge-halo2
 
 ## Networks supported
 
-| Network | What can be exercised | Why |
-|---|---|---|
-| **Local devnet** (`make run` of `acki-nacki/`, GQL at `http://localhost/graphql`) | **Full E2E** — Circuits 1A + 2 (bundle proving) **and** Circuit 4 (per-event proving via the Python orchestrator). | Local cluster ships a GiverV3 contract the orchestrator funds the test multisig from. |
-| **Shellnet** (`https://shellnet.ackinacki.org/graphql`) | **Circuits 1A + 2 only** — bundle proving, no event proving. | Shellnet has no giver reachable from arbitrary callers, so the orchestrator cannot deploy / fund the test multisig that emits `WithdrawalInitiated`. |
+| Network | What can be exercised |
+|---|---|
+| **Local devnet** (`make run` of `acki-nacki/`, GQL at `http://localhost/graphql`) | **Full E2E** — Circuits 1A + 2 (bundle proving) **and** Circuit 4 (per-event proving via the Python orchestrator). |
+| **Shellnet** (`https://shellnet.ackinacki.org/graphql`) | **Circuits 1A + 2 only** — bundle proving, no event proving. |
 
 Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no `if shellnet` branches in code.
 
