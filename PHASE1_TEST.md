@@ -9,7 +9,7 @@ Proof correctness is covered by the integration tests in
 
 ## Scope
 
-- **Single-thread testbed** (`poseidon_dex` / `test_bridge_poseidon_dex`):
+- **Single-thread testbed** (`poseidon_dex`):
   `block_height == seq_no` by construction. Multi-thread divergence is a
   later phase.
 - **W = 8**, pinned via `bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE`.
@@ -19,7 +19,7 @@ Proof correctness is covered by the integration tests in
 
 ## Prerequisites
 
-Local Docker Acki Nacki node on `test_bridge_poseidon_dex` at `seq_no >= 8`.
+Local Docker Acki Nacki node on `poseidon_dex` at `seq_no >= 8`.
 Confirm:
 ```bash
 curl -s http://localhost/graphql -H "Content-Type: application/json" \
