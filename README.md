@@ -1,21 +1,43 @@
 # Acki Nacki → Ethereum Bridge: Halo2 Prover & Verifier
 
-Off-chain prover and verifier daemons that generate and verify halo2 KZG proofs for Acki Nacki block attestations. Connects to a running Acki Nacki node via GraphQL, fetches BLS-signed attestations from block data, and produces SNARK proofs that could be verified on Ethereum.
+Off-chain daemons that produce and locally verify the halo2 KZG proofs the
+Ethereum bridge contract consumes. Three circuits are exercised:
+
+| Circuit | K | Role |
+|---|---|---|
+| 1A — Primary BLS Attestation | 20 | ≥ ⌈2n/3⌉ BLS signers from the current BK set sign a block; binds `block_id` to `bk_set_poseidon`. |
+| 2 — Layer Historical Hashes  | 17 | Open the L0 Poseidon preimage in the `block_id` Merkle tree; advance `GlobalHistoryData` layer windows through a dense Poseidon chain (`MAX_CHAIN_LEN = 11`). |
+| 4 — Bridge Event Prover      | 19 | Hash a `WithdrawalInitiated` event BOC, bind it to a `Poseidon96` block leaf, climb the dense chain, and publish a single `final_root` as a public input — the verifier checks it off-circuit against its mirror of `layer_windows`. |
+
+Theory, circuit witnesses, contract sketch: see [`acki-nacki-to-eth-bridge-halo2-circuits/README.md`](../acki-nacki-to-eth-bridge-halo2-circuits/README.md). This README covers **off-chain operation**: daemons, IPC, state, runbooks for the two supported networks.
+
+> **Notation:** `W` ≡ `HISTORY_PROOF_WINDOW_SIZE`, `P` ≡ `THINNING_FACTOR_P`. Bundle width = `W·P` source blocks.
+
+---
+
+## Networks supported
+
+| Network | What can be exercised | Why |
+|---|---|---|
+| **Local devnet** (`make run` of `acki-nacki/`, GQL at `http://localhost/graphql`) | **Full E2E** — Circuits 1A + 2 (bundle proving) **and** Circuit 4 (per-event proving via the Python orchestrator). | Local cluster ships a GiverV3 contract the orchestrator funds the test multisig from. |
+| **Shellnet** (`https://shellnet.ackinacki.org/graphql`) | **Circuits 1A + 2 only** — bundle proving, no event proving. | Shellnet has no giver reachable from arbitrary callers, so the orchestrator cannot deploy / fund the test multisig that emits `WithdrawalInitiated`. |
+
+Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no `if shellnet` branches in code.
+
+---
 
 ## Table of Contents
 
 - [Architecture](#architecture)
+- [Repository Layout](#repository-layout)
 - [Prerequisites](#prerequisites)
-- [Quick Start (Local Node)](#quick-start-local-node)
-- [Quick Start (Shellnet)](#quick-start-shellnet)
-- [Configuration](#configuration)
-- [Running the Prover](#running-the-prover)
-- [Running the Verifier](#running-the-verifier)
-- [Running Both Daemons Together](#running-both-daemons-together)
-- [Output and Results](#output-and-results)
-- [Evaluating Results](#evaluating-results)
+- [Configuration (env vars)](#configuration-env-vars)
+- [Bootstrap behavior](#bootstrap-behavior)
+- [Runbook — local devnet (full E2E with Circuit 4)](#runbook--local-devnet-full-e2e-with-circuit-4)
+- [Runbook — shellnet (Circuits 1A + 2 only)](#runbook--shellnet-circuits-1a--2-only)
+- [IPC, State, and On-disk Artifacts](#ipc-state-and-on-disk-artifacts)
+- [Performance](#performance)
 - [Integration Tests](#integration-tests)
-- [Project Structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -23,405 +45,382 @@ Off-chain prover and verifier daemons that generate and verify halo2 KZG proofs 
 ## Architecture
 
 ```
-┌──────────────────────┐
-│  Acki Nacki Node     │
-│  (localhost or       │
-│   shellnet)          │
-│                      │
-│  GraphQL API ────────┼──── http://localhost/graphql
-│  Block BOC data      │     https://shellnet.ackinacki.org/graphql
-└──────────┬───────────┘
-           │
-           ▼
-┌──────────────────────┐       proofs/proof_000042.json
-│  Prover Daemon       │ ──────────────────────────────►  ┌──────────────────────┐
-│                      │                                   │  Verifier Daemon     │
-│  • Fetches block BOC │       proofs/result_000042.json   │                      │
-│  • Extracts attesta- │ ◄──────────────────────────────── │  • Reads proof files │
-│    tion from common  │                                   │  • Verifies proof    │
-│    section           │                                   │  • Writes result     │
-│  • Generates halo2   │                                   │  • Tracks last_seen  │
-│    proof (~100s)     │                                   │  • Prints summary    │
-│  • Logs witnesses    │                                   └──────────────────────┘
-└──────────────────────┘
-
-Shared:
-  params/          ← SRS, VK, PK (cached, ~3.5 GB total)
-  (BK set extracted automatically from GraphQL at startup)
-  proofs/          ← proof + result JSON files (IPC)
-  logs/            ← witness dumps on failure
+              ┌──────────────────────────┐
+              │  Acki Nacki node(s)      │
+              │  local devnet  OR        │
+              │  shellnet                │
+              └────────────┬─────────────┘
+                           │ GQL (BRIDGE_GQL_ENDPOINT)
+       ┌───────────────────┼────────────────────────────┐
+       ▼                                                ▼
+┌─────────────────────┐                  ┌────────────────────────────┐
+│ bridge-prover       │   proofs/        │ bridge-verifier            │
+│  • Circuit 1A       │ ───────────────► │  • Reads proof_*.json      │
+│  • Circuit 2        │  proof_NNN.json  │  • Verifies 1A + 2         │
+│  • One bundle per   │ ◄─────────────── │  • Advances layerWindows   │
+│    thinned KB       │  result_NNN.json │  • Watches proof_event_*   │
+│    (W·P blocks)     │                  │  • Verifies Circuit 4      │
+└─────────────────────┘                  └────────────────────────────┘
+                           ▲                       ▲
+                           │ proof_event_NNN.json  │  (LOCAL DEVNET ONLY)
+┌──────────────────────────┴────────────────┐      │
+│ Per WithdrawalInitiated event:            │      │
+│   bridge-event-private-witness-export ─►  │      │
+│   bridge-event-witness-builder        ─►  │      │
+│   bridge-event-halo2-prover --fixture ─────┘     │
+│ (driven by the Python E2E orchestrator)          │
+└──────────────────────────────────────────────────┘
 ```
 
-The prover and verifier communicate via **file-based IPC**: the prover writes `proofs/proof_{seq_no}.json`, the verifier reads it, verifies, and writes `proofs/result_{seq_no}.json`. The prover waits for the result before proceeding to the next block.
+Both halves of the system are **file-based**: `proofs/proof_NNN.json` is the prover→verifier channel; `proofs/result_NNN.json` (or `proof_event_NNN.result.json` for Circuit 4) is the verifier→prover ACK. `state/verifier_state.json` is the off-chain twin of the Ethereum contract's `layerWindows` storage.
+
+**On-demand PK loading.** Each proving key is ~3 GB. The prover loads one circuit's PK, generates a proof, then unloads before loading the next — peak RSS stays around 14 GB instead of 22+.
+
+---
+
+## Repository Layout
+
+```
+acki-nacki-to-eth-bridge-halo2-prover/
+├── bridge-prover-lib/                     # shared library
+├── bridge-prover-daemon/                  # bin "bridge-prover"        (Circuits 1A + 2)
+├── bridge-verifier-daemon/                # bin "bridge-verifier"      (all three circuits)
+├── bridge-event-prover-lib/               # shared Circuit 4 prover/verifier library
+├── bridge-event-halo2-prover/             # bin "bridge-event-halo2-prover" (Circuit 4, one-shot)
+├── bridge-event-private-witness-export/   # bin: dump PartialPrivateWitness from a block
+├── bridge-event-witness-builder/          # bin: enrich it via GQL + verifier state
+├── bk_set.json                            # local BLS pubkeys fallback (see Troubleshooting)
+├── scripts/run-bridge-test.sh             # launcher (wipes state, builds, starts both daemons)
+├── scripts/stop-bridge-test.sh
+├── params/   state/   proofs/   logs/     # gitignored; created on demand
+└── .cargo/config.toml                     # --cfg tokio_unstable (required, do not remove)
+```
+
+`HISTORY_WINDOW_SIZE` is driven by `bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE` (currently `128`) — node and prover therefore cannot disagree on `W` at the constant level. `THINNING_FACTOR_P` (currently `4`) lives in `bridge-prover-lib/src/lib.rs`.
 
 ---
 
 ## Prerequisites
 
-- **Rust toolchain** (nightly recommended, project uses `opt-level = 3` in dev profile)
-- **~4 GB disk** for cached proving key + SRS
-- **~16 GB RAM** for proof generation
-- **Access to an Acki Nacki node** (local docker or shellnet)
+- **Rust nightly** (release builds).
+- **~10 GB free disk** under `params/` (KZG SRS + three PKs).
+- **~16 GB RAM** during proof generation.
+- **Docker / docker compose** for the local 5-node Acki Nacki cluster (local devnet only).
+- Sibling checkout of [`acki-nacki`](https://github.com/gosh-sh/acki-nacki) on branch **`poseidon_dex`** (local devnet only).
+- Python 3 + `tvm-cli` on PATH (local devnet only — orchestrator).
+- These two repos pinned to the matching branches:
 
-### For local node:
-
-- Docker and docker-compose
-- The `acki-nacki` repo cloned locally
-
-### For shellnet:
-
-- Internet access to `https://shellnet.ackinacki.org/graphql`
+| Repo | Branch |
+|---|---|
+| `gosh-sh/acki-nacki-to-eth-bridge-halo2-prover` (this repo) | `full_bridge_flow_test_single_final_root` |
+| `gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits` | `circuit4-single-final-root` (pinned via this repo's `Cargo.toml`) |
 
 ---
 
-## Quick Start (Local Node)
+## Configuration (env vars)
 
-### 1. Start the local node
+| Env var | Used by | Default | Meaning |
+|---|---|---|---|
+| `BRIDGE_GQL_ENDPOINT` | prover, verifier | `http://localhost/graphql` | Acki Nacki GraphQL URL. Verifier uses it for BK-set fetch (falls back to `./bk_set.json` on failure). |
+| `BRIDGE_BOOTSTRAP_SEQNO` | prover only | unset → auto | Explicit seed seqno. Must be `> 0` and divisible by `W·P` (= 512), else the daemon refuses to start. |
+| `RUST_LOG` | both | `info` | Standard env_logger spec. |
+
+All other constants (poll intervals, file paths, `THINNING_FACTOR_P`) are hard-coded; see `bridge-prover-daemon/src/main.rs` and `bridge-verifier-daemon/src/main.rs` if you need to change them.
+
+---
+
+## Bootstrap behavior
+
+The prover writes `state/bootstrap_seed.json` once on first start and the verifier mirrors from it. There are two modes:
+
+- **Auto (`BRIDGE_BOOTSTRAP_SEQNO` unset)** — at startup, the prover reads the current chain head, pins the seed at the next `W·P` boundary strictly past it, then polls until the chain reaches that seqno. The seed is **pinned once** and never recomputed. Works for fresh devnet *and* mid-chain shellnet.
+- **Explicit (`BRIDGE_BOOTSTRAP_SEQNO=N`)** — uses `N` directly. `N` must be `> 0` and `N % (W·P) == 0`. Use this for reproducibility, or to skip the auto-mode wait by pinning to a known-good seed already past chain head.
+
+After first init the seed file is the single source of truth — the verifier does not re-read it, and the prover does not re-pick. If you ever need to re-seed (e.g. switching networks), **wipe `state/` on both daemons together** — otherwise the verifier keeps its stale persisted state while the prover writes a fresh seed, and they silently diverge.
+
+---
+
+## Runbook — local devnet (full E2E with Circuit 4)
+
+### Step 1 — Start the cluster
+
+```bash
+cd /path/to/acki-nacki                   # checked out to branch `poseidon_dex`
+make run                                  # kill + build_node + run_silent
+docker ps                                 # expect node{0..4}, q_server0, block_manager, nginx0, aerospike
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"query":"{ blockchain { blocks(last: 1) { edges { node { seq_no } } } } }"}' \
+     http://localhost/graphql            # should return a seq_no
+```
+
+First-ever build: 10–20 min. Incremental: seconds-to-minutes via Docker cache.
+
+### Step 2 — Sync `bk_set.json` to the cluster's BLS keys
+
+The verifier falls back to `./bk_set.json` if the GQL `bkSetUpdates` race loses at startup. The file must match `acki-nacki/config/block_keeper{0..4}_bls.keys.json`. If you've run before on the same chain branch, just restore the backup:
+
+```bash
+cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
+cp bk_set.json.poseidon_dex_local.bak bk_set.json   # if backup exists & branch unchanged
+```
+
+Otherwise build it fresh:
+
+```bash
+python3 -c '
+import json
+out = {}
+for i in range(5):
+    with open(f"/path/to/acki-nacki/config/block_keeper{i}_bls.keys.json") as f:
+        out[str(i)] = json.load(f)[0]["public"]
+print(json.dumps(out, indent=2))
+' > bk_set.json
+```
+
+### Step 3 — Keys (first run only)
+
+| Circuit | Files produced under `params/` | Command |
+|---|---|---|
+| 4 — Event Prover (K=19) | `event_pk.bin`, `event_vk.bin`, `event_config_params.json` | `cargo run --release --bin bridge-event-halo2-prover -- --selftest` (~5 min). **Run this first** — the verifier bails on missing `event_vk.bin`. |
+| 1A — Primary (K=20) | `primary_pk.bin`, `primary_vk.bin` | generated by `bridge-prover` on first start (next step). |
+| 2 — Layer (K=17) | `layer_pk.bin`, `layer_vk.bin` | same — generated by `bridge-prover` on first start. |
+
+### Step 4 — Start prover + verifier
+
+```bash
+cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
+rm -rf state/ proofs/                                      # wipe both together
+scripts/run-bridge-test.sh                                  # builds, launches both, writes logs/
+# Or manually (e.g. for restart-resume testing):
+#   ./target/release/bridge-verifier &
+#   ./target/release/bridge-prover &
+```
+
+No env vars needed — defaults give `BRIDGE_GQL_ENDPOINT=http://localhost/graphql` and auto-mode bootstrap.
+
+Tail:
+```bash
+tail -f logs/verifier_output.log logs/prover_output.log
+```
+
+Expect within ~3 min: prover logs `auto-mode: chain head at seq_no=N, pinned seed seq_no=M` then `seed key block available ... seed written`, verifier logs `bootstrapping from seed at ./state/bootstrap_seed.json`.
+
+### Step 5 — Run the orchestrator
 
 ```bash
 cd /path/to/acki-nacki
-git checkout latest_an_to_eth_bridge_test
-make run
-# Wait ~2 min for docker build + node startup
-# Verify: curl http://localhost/graphql -H "Content-Type: application/json" \
-#   -d '{"query":"{ blockchain { blocks(last: 1) { edges { node { seq_no } } } } }"}'
+NETWORK=localhost python3 tests/exchange/generate_withdrawals_with_live_event_proving.py
 ```
 
-### 2. BK set
+Phases (`[T+MM:SS]`):
+1. Deploy multisig wallet, fund via GiverV3.
+2. Send `WithdrawalInitiated` via `TokenBridge`.
+3. Poll GraphQL for the ExtOut message; capture `(block_seq_no, block_height, envelope_hash, account_dapp_id, account_id)`.
+4. Compute `thinned_kb_seq = ((event_seq // (W·P)) + 1) · W·P` and wait for the verifier state to advance to it.
+5. Run `bridge-event-private-witness-export` → `bridge-event-witness-builder` → `bridge-event-halo2-prover --fixture <enriched.json> --out-dir proofs/`.
+6. Wait for `proofs/proof_event_NNN.result.json` from the verifier daemon.
+7. Assert `verified == true && anchor_matched == true && proof_valid == true`. Exit 0.
 
-No manual setup required. The prover daemon **automatically extracts the BK set** via GraphQL `bkSetUpdates` at startup. It queries the full history of BK set changes (adds/removes) and reconstructs the current active validator set.
-
----
-
-## Quick Start (Shellnet)
-
-Set the endpoint in `bridge-prover-daemon/src/main.rs`:
-
-```rust
-const GQL_ENDPOINT: &str = "https://shellnet.ackinacki.org/graphql";
-```
-
-Then build and run the prover daemon. BK set is extracted automatically from the network.
-
----
-
-## Configuration
-
-All configuration is currently via constants in the source code. Key settings:
-
-### Prover Daemon (`bridge-prover-daemon/src/main.rs`)
-
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `MAX_BLOCKS_TO_PROCESS` | 100 | Stop after this many blocks |
-| `SLEEP_BETWEEN_BLOCKS` | 10s | Delay between processing blocks |
-| `SLEEP_ON_RETRY` | 5s | Delay when attestation not yet available |
-| `INITIAL_WAIT` | 30s | Wait for node to produce blocks at startup |
-| `VERIFIER_TIMEOUT` | 60s | Max wait for verifier result file |
-| `GQL_ENDPOINT` | `http://localhost/graphql` | Node GraphQL endpoint |
-| `PARAMS_DIR` | `./params` | Directory for SRS, VK, PK cache |
-| `BK_SET_CONFIG` | `./bk_set.json` | BK set fallback file (optional, GraphQL is primary) |
-
-### Verifier Daemon (`bridge-verifier-daemon/src/main.rs`)
-
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `PARAMS_DIR` | `./params` | Must match prover's params dir |
-| `POLL_INTERVAL` | 500ms | How often to check for new proof files |
-| `MAX_IDLE_WAIT` | 600s | Shutdown after 10 min of no new proofs |
-
-### Circuit Parameters (hardcoded in `bridge-prover-lib/src/keys.rs`)
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `K` | 20 | Circuit size (2^20 rows) |
-| `LOOKUP_BITS` | 19 | Lookup table size |
-| `LIMB_BITS` | 104 | CRT limb bit width |
-| `NUM_LIMBS` | 5 | CRT limbs per field element |
-| `MAX_SIGNERS` | 300 | Max BK set size (single-VK support) |
-
-
----
-
-## Running the Prover
+### Step 6 — Inspect
 
 ```bash
-# From the project root:
-cargo run --release --bin bridge-prover
-
-# With debug logging:
-RUST_LOG=debug cargo run --release --bin bridge-prover
+ls proofs/
+# proof_001536.json  result_001536.json
+# proof_event_000000.json  proof_event_000000.result.json
+cat proofs/proof_event_000000.result.json
 ```
 
-### What happens on first run:
-
-1. Connects to GraphQL endpoint
-2. Loads BK set from GraphQL `bkSetUpdates`
-3. Computes Poseidon commitment
-4. Generates SRS (`params/kzg_bn254_20.srs`, ~128 MB, ~1s)
-5. **Keygen** (`params/primary_vk.bin` + `params/primary_pk.bin`, ~130s) ← only first time
-6. Waits 30s for node to produce blocks
-7. Enters main loop: fetch attestation → generate proof → write to `proofs/`
-
-### What happens on subsequent runs:
-
-Steps 1-4 same, step 5 loads from cache (~3s), then main loop.
-
-### Output files:
-
-- `proofs/proof_{seq_no:06}.json` — proof + public instances for each block
-- `logs/block_{seq_no:06}_witnesses.json` — private witness dump on proof generation failure
-
----
-
-## Running the Verifier
+### Stop
 
 ```bash
-# From the project root (same directory as prover):
-cargo run --release --bin bridge-verifier
-
-# With debug logging:
-RUST_LOG=debug cargo run --release --bin bridge-verifier
-```
-
-### Prerequisites:
-
-- Verifier extracts BK set from GraphQL (same as prover) to compute Poseidon commitment
-- `params/primary_vk.bin` + `params/primary_config_params.json` must exist (run prover first to generate)
-- The verifier does **NOT** need `primary_pk.bin` (saves ~3.5 GB for verifier-only deployments)
-
-### What it does:
-
-1. Loads BK set and computes Poseidon commitment
-2. Loads VK + SRS from `params/`
-3. Watches `proofs/` directory for new `proof_{seq_no}.json` files
-4. For each proof:
-   - Validates `last_seen_block_seqno` matches its tracked state
-   - Reconstructs the 4 public instances
-   - Verifies the halo2 proof (~5ms)
-   - Writes `proofs/result_{seq_no:06}.json`
-5. After 10 minutes of no new proofs, prints summary and exits
-
----
-
-## Running Both Daemons Together
-
-Open two terminals in the project root:
-
-```bash
-# Terminal 1: Start verifier first (it waits for proofs)
-RUST_LOG=info cargo run --release --bin bridge-verifier
-
-# Terminal 2: Start prover
-RUST_LOG=info cargo run --release --bin bridge-prover
-```
-
-The prover generates proofs and writes them to `proofs/`. The verifier picks them up, verifies, and writes results. The prover waits for each result before proceeding.
-
-### Cleanup between runs:
-
-```bash
-# Remove old proof/result files to start fresh
-rm -rf proofs/*.json
-
-# Optionally remove cached keys to force re-keygen
-rm -f params/primary_*.bin params/primary_*.json
+scripts/stop-bridge-test.sh             # SIGINT both, SIGKILL after 30s if needed
+cd /path/to/acki-nacki && make stop     # stops + removes docker volumes
 ```
 
 ---
 
-## Output and Results
+## Runbook — shellnet (Circuits 1A + 2 only)
 
-### Proof files (`proofs/proof_{seq_no:06}.json`)
+No multisig, no event proving — just observational bundle proving against the live shellnet. Same binaries as Step 4 above, different env vars.
+
+### Step 1 — Build binaries (if not already built)
+
+```bash
+cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
+cargo build --release --bin bridge-prover --bin bridge-verifier
+```
+
+If Circuit 4 keys (`params/event_*.bin`) are absent, generate them too:
+```bash
+cargo run --release --bin bridge-event-halo2-prover -- --selftest
+```
+(Verifier loads all three VKs at startup even when Circuit 4 will never fire on this network.)
+
+### Step 2 — Sync `bk_set.json` to shellnet's BLS keys
+
+The verifier prefers GQL but falls back to this file. Pull shellnet's current 5 signers:
+
+```bash
+# Replace `0`/`1`/... with shellnet's actual signer indices (sparse — query GQL).
+# Quick check that the GQL endpoint is reachable:
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"query":"{ bkSetUpdates(last:1){edges{node{height nodeId}}}}"}' \
+     https://shellnet.ackinacki.org/graphql
+```
+
+In practice the GQL race wins on shellnet (the chain is always live), so `bk_set.json` only matters as a safety net. If unsure, copy the shellnet backup if you have one, or just let the daemon fetch over GQL — watch the startup log for `loaded BK set from GraphQL: N signers`.
+
+### Step 3 — Wipe state, start both daemons
+
+```bash
+cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
+rm -rf state/ proofs/ logs/ && mkdir -p logs
+
+BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql \
+    nohup ./target/release/bridge-verifier > logs/verifier.log 2>&1 &
+echo "verifier_pid=$!" > logs/pids.txt
+
+BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql \
+    nohup ./target/release/bridge-prover > logs/prover.log 2>&1 &
+echo "prover_pid=$!" >> logs/pids.txt
+```
+
+Optionally pin the seed for reproducibility:
+```bash
+BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql \
+BRIDGE_BOOTSTRAP_SEQNO=365056 \
+    ./target/release/bridge-prover ...
+```
+
+### Step 4 — Watch first bundle land
+
+```bash
+tail -f logs/verifier.log logs/prover.log
+ls proofs/                              # proof_<seed+512>.json + result_<seed+512>.json
+cat proofs/result_<seed+512>.json       # { "primary_verified": true, "layer_verified": true, "error": null }
+```
+
+Expected wall-clock from prover start to first verified bundle: ~12 min (waiting for chain to cross seed + ~5 min Circuit 1A + ~3 min Circuit 2).
+
+### Stop
+
+```bash
+kill $(cat logs/pids.txt | cut -d= -f2)
+```
+
+---
+
+## IPC, State, and On-disk Artifacts
+
+### `proofs/proof_NNN.json` (block bundles, written by the prover)
 
 ```json
 {
-  "block_seq_no": 42,
-  "last_seen_block_seqno": 41,
-  "envelope_hash_hex": "aabb...64hex...",
-  "proof_hex": "ccdd...hex-encoded-8192-byte-proof..."
+  "block_seq_no": 1536,
+  "last_seen_block_seqno": 1024,
+  "block_id_hex": "…",
+  "primary_proof_hex": "…",   "primary_proof_gen_ms": 102392,
+  "layer_proof_hex":   "…",   "layer_proof_gen_ms":   137310,
+  "layer_block_id_hex": "…",
+  "bk_set_poseidon_hash_hex": "…",
+  "num_layers": 2,
+  "layer_hash_frs_hex": ["…", "…", "0", … (MAX_LAYERS = 10 entries)],
+  "prev_max_level_layer_hash_hex": "…"
 }
 ```
 
-### Result files (`proofs/result_{seq_no:06}.json`)
+### `proofs/proof_event_NNN.json` (Circuit 4, local devnet only)
 
 ```json
 {
-  "block_seq_no": 42,
-  "verified": true,
-  "error": null
+  "schema_version": 1,
+  "seq_no": 0,
+  "proof_hex": "…",
+  "public_instances_hex": ["…", … (10 entries; slot 9 = final_root)],
+  "self_verified": true,
+  "event_proof_gen_ms": 152166
 }
 ```
 
-On failure:
+### `proofs/result_NNN.json` (bundle ACK) / `proofs/proof_event_NNN.result.json` (event ACK)
+
 ```json
-{
-  "block_seq_no": 42,
-  "verified": false,
-  "error": "proof verification failed"
-}
+{ "block_seq_no": 1536, "primary_verified": true, "layer_verified": true, "error": null }
 ```
 
-### Witness logs (`logs/block_{seq_no:06}_witnesses.json`)
-
-Written by the prover on proof generation failure:
 ```json
-{
-  "block_seq_no": 42,
-  "attestation_bytes_hex": "...",
-  "bk_set": { "0": "aabb...", "1": "ccdd..." },
-  "last_seen_block_seqno": 41
-}
+{ "verified": true, "anchor_matched": true, "proof_valid": true, "prover_self_verified": true, "verified_at_block_seq_no": 1536, "event_public_instances_hex": [...], "error": null }
 ```
 
-### Prover summary (stdout at exit)
+### `state/prover_state.json` and `state/verifier_state.json`
 
-```
-=== PROVER SUMMARY ===
-total time:              1840.1s
-blocks processed:        10
-primary attestations:    10
-fallback attestations:   0
-skipped blocks:          0
-verification OK:         10
-verification FAILED:     0
-avg proof time:          183.6s
-```
+Persisted bridge state — layer hashes per active layer (1..`max_layers_ever_seen`), the last relayed key-block seqno/height, BK set commitment. The verifier file is the canonical off-chain mirror of the Ethereum contract's `layerWindows` storage.
 
-### Verifier summary (stdout at exit)
+### `state/bootstrap_seed.json`
 
-```
-=== VERIFIER SUMMARY ===
-total time:            1845.3s
-total proofs received: 10
-verified OK:           10
-verified FAILED:       0
-```
+Written by the prover on first run from the seed key block's envelope; consumed by the verifier on startup so both halves agree on initial `(bk_set, height, last_seen)`. Never re-read after first init.
 
 ---
 
-## Evaluating Results
+## Performance
 
-### Key metrics
+Measured 2026-05-23, release profile, 5-node local Acki Nacki devnet (~3 b/s), `W=128, P=4`.
 
-| Metric | Expected (local, K=20) | Notes |
-|--------|----------------------|-------|
-| Proof generation time | 85-200s | Varies with CPU load; ~100s solo |
-| Verification time | 3-12ms | Very fast |
-| Proof size | 8,192 bytes | Constant for K=20, 26 columns |
-| Keygen time (first run) | ~130s | Cached after first run |
-| SRS load time | ~100ms | Cached to `params/kzg_bn254_20.srs` |
+### Per-proof generation
 
-### What to check
+| Circuit | K | Range |
+|---|---|---|
+| 1A (Primary BLS) | 20 | ~5 min |
+| 2 (Layer Historical Hashes) | 17 | ~3 min |
+| 4 (Bridge Event Prover) | 19 | ~5 min |
 
-1. **All blocks verified OK** — no `VERIFY-FAIL` in results
-2. **BK set commitment is constant** across all proofs (same BK set)
-3. **block_seq_no is monotonically increasing** — each proof covers the next block
-4. **last_seen matches** between prover and verifier — no state desync
-5. **No witness logs** in `logs/` — means no proof generation failures
+Verify times: ~5 ms (1A), ~3 ms (2), ~110 ms (4). All constant-time.
 
-### Investigating failures
+### Whole E2E cycle
 
-If a block fails verification:
+| Scenario | Wall-clock (orchestrator T+) |
+|---|---|
+| Local devnet, daemons started before event (one bundle of catch-up) | **~10:30** |
+| Shellnet, prover start → first verified bundle | **~12:00** |
 
-1. Check `proofs/result_{seq_no}.json` for the error message
-2. Check `logs/block_{seq_no}_witnesses.json` for the private witnesses
-3. Common issues:
-   - **BK set mismatch**: prover and verifier extracted different BK sets (race with rotation)
-   - **Attestation format**: block BOC structure changed between node versions
-   - **Threshold not met**: block has fewer signers than `ceil(2*n/3)`
+### Cached cryptographic artifacts
+
+| File | Size |
+|---|---|
+| `params/kzg_bn254_20.srs` | ~128 MB (K=17/19/20 share via degree truncation) |
+| `params/primary_pk.bin` | ~3.5 GB |
+| `params/layer_pk.bin` | ~2.7 GB |
+| `params/event_pk.bin` | ~2.65 GB |
+
+Peak RSS stays around the largest of the three (load-on-demand).
 
 ---
 
 ## Integration Tests
 
-All tests require a running node (local or shellnet).
+All require the local Acki Nacki cluster up on `http://localhost/graphql`.
 
 ```bash
-# BLS verification on a live attestation (fast, ~1s)
-cargo test -p bridge-prover-lib --test live_attestation_test -- --nocapture
-
-# Generate and verify 1 proof from live data (~2-4 min)
-cargo test -p bridge-prover-lib --test live_proof_test -- --nocapture
-
-# Generate and verify 10 consecutive proofs (~20 min)
-cargo test -p bridge-prover-lib --test live_10_blocks_test -- --nocapture
-
-# Extract BK set from shellnet (no local node needed, ~1s)
-cargo test -p bridge-prover-lib --test shellnet_bk_set_test -- --nocapture
-
-# BOC parser unit test (no node needed)
-cargo test -p bridge-prover-lib -- test_parse_known_attestation --nocapture
-```
-
----
-
-## Project Structure
-
-```
-acki-nacki-to-eth-bridge-halo2-prover/
-├── Cargo.toml                          # Workspace definition
-├── README.md                           # This file
-├── bridge-prover-lib/                  # Core library
-│   ├── src/
-│   │   ├── lib.rs                      # Re-exports
-│   │   ├── gql_client.rs              # GraphQL client (blocks, BOC, bkSetUpdates)
-│   │   ├── boc_parser.rs             # Extract attestations from block BOC
-│   │   ├── attestation_fetcher.rs     # High-level: fetch attestation + BK set
-│   │   ├── poseidon.rs               # Native Poseidon BK set commitment
-│   │   ├── keys.rs                    # SRS/VK/PK generation and caching
-│   │   ├── prover.rs                 # Proof generation wrapper
-│   │   ├── verifier.rs               # Proof verification wrapper
-│   │   └── ipc.rs                    # File-based IPC (proof/result JSON)
-│   └── tests/
-│       ├── live_attestation_test.rs   # BLS verification on live data
-│       ├── live_proof_test.rs         # Single proof generation
-│       ├── live_10_blocks_test.rs     # 10-block endurance test
-│       └── shellnet_bk_set_test.rs    # BK set extraction from shellnet
-├── bridge-prover-daemon/               # Prover binary
-│   └── src/main.rs                    # Main loop: fetch → prove → write
-├── bridge-verifier-daemon/             # Verifier binary
-│   └── src/main.rs                    # Watch → verify → write result
-├── params/                             # Cached cryptographic artifacts (gitignored)
-│   ├── kzg_bn254_20.srs              # SRS (128 MB)
-│   ├── primary_vk.bin                # Verification key (3.4 KB)
-│   ├── primary_pk.bin                # Proving key (3.5 GB)
-│   └── primary_config_params.json    # Circuit parameters
-├── proofs/                             # IPC directory (gitignored)
-│   ├── proof_000001.json
-│   ├── result_000001.json
-│   └── ...
-└── logs/                               # Failure logs (gitignored)
-    └── block_000042_witnesses.json
+cargo test -p bridge-prover-lib --test live_attestation_test    -- --nocapture  # BLS verify, ~1 s
+cargo test -p bridge-prover-lib --test live_proof_test          -- --nocapture  # Circuit 1A, ~2-3 min
+cargo test -p bridge-prover-lib --test both_circuits_test       -- --nocapture  # 1A + 2, ~2.5 min
+cargo test -p bridge-prover-lib --test live_10_blocks_test      -- --nocapture  # 10× Circuit 1A, ~20 min
+cargo test -p bridge-prover-lib --test tree_reconstruction_test -- --nocapture
+cargo test -p bridge-prover-lib --test shellnet_bk_set_test     -- --nocapture  # BK set extraction (shellnet)
+cargo test -p bridge-event-prover-lib --test event_prover       -- --nocapture  # Circuit 4 standalone
 ```
 
 ---
 
 ## Troubleshooting
 
-### "BK set is empty after processing bkSetUpdates"
-
-The GraphQL `bkSetUpdates` query returned changes but the net result is zero active signers. This can happen if the initial BK set was established at genesis and isn't captured in bkSetUpdates. Provide a `bk_set.json` fallback file as a workaround.
-
-### "primary VK not found"
-
-Run the prover first to generate keys. The verifier needs `params/primary_vk.bin` and `params/primary_config_params.json` (but NOT `primary_pk.bin`).
-
-### "attestation not found for block seq_no=X"
-
-The node may not have produced that block yet, or the block's BOC isn't available via GraphQL. The prover retries with a delay.
-
-### "proof generation failed"
-
-Check `logs/block_*_witnesses.json` for the full witness dump. Common causes:
-- Attestation binary format mismatch (node version differs from parser expectations)
-- BK set pubkeys don't match what the attestation was signed with
-- Block has fewer signers than the primary threshold requires
-
-### Slow proof generation (>200s)
-
-Normal if other CPU-intensive tasks are running. Solo performance is ~100s per proof. The node itself consumes significant CPU.
-
-### "keygen takes too long"
-
-First-run keygen takes ~130s and produces a ~3.5 GB proving key. Subsequent runs load from cache in ~3s. Do not interrupt keygen.
+| Symptom | Cause / Fix |
+|---|---|
+| Verifier exits with `"primary VK not found"` / `"layer VK not found"` | Run `bridge-prover` first — it generates 1A/2 keys on initial start (~10 min). |
+| Verifier exits with `"event VK not found"` | Run `cargo run --release --bin bridge-event-halo2-prover -- --selftest` once. |
+| Prover auto-mode never starts proving — seed seqno keeps moving | Should not happen (bugfix landed 2026-05-23: seed is pinned once at startup). If observed, file an issue. As a workaround, pin via `BRIDGE_BOOTSTRAP_SEQNO=<next W·P boundary past chain head>`. |
+| Circuit 1A fails with ~96 BLS pairing equality constraint violations | `bk_set.json` stale — re-sync from `acki-nacki/config/block_keeper*_bls.keys.json` (see local Step 2) or trust the GQL fetch by deleting the stale file. |
+| Verifier state file shows old `last_key_block` after restart with new network | Wipe `state/` on **both** daemons together before re-seeding. The verifier never re-reads `bootstrap_seed.json` after first init. |
+| Orchestrator hits `VERIFIER_STATE_TIMEOUT_S` | Confirm prover is producing bundles (`logs/prover_output.log` should show `=== Processing key block at height ===` every ~3 min). |
+| `non-monotone height` in verifier log | Cluster was restarted (chain reset) without wiping prover/verifier `state/`. Wipe both, re-bootstrap. |
+| `spawned_tasks_count not found` / tokio errors | `--cfg tokio_unstable` missing. Restore `.cargo/config.toml`. |

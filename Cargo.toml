@@ -1,5 +1,13 @@
 [workspace]
-members = ["bridge-prover-lib", "bridge-prover-daemon", "bridge-verifier-daemon"]
+members = [
+    "bridge-prover-lib",
+    "bridge-prover-daemon",
+    "bridge-verifier-daemon",
+    "bridge-event-private-witness-export",
+    "bridge-event-prover-lib",
+    "bridge-event-halo2-prover",
+    "bridge-event-witness-builder",
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -8,13 +16,20 @@ halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls1
 halo2-ecc = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main", default-features = false, features = ["halo2-axiom"] }
 
 # Circuit and crypto libs
-attestation-bls-checker-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
-bridge-parsers = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
-bridge-poseidon = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
-bridge-test-data-gen = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "main" }
+attestation-bls-checker-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "circuit4-single-final-root" }
+historical-layer-hashes-movement-checker-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "circuit4-single-final-root" }
+bridge-parsers = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "circuit4-single-final-root" }
+bridge-poseidon = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "circuit4-single-final-root" }
+bridge-test-data-gen = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "circuit4-single-final-root" }
+bridge-event-prove-circuit = { git = "https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits", branch = "circuit4-single-final-root" }
 gosh-bls-verification = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
+gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
+gosh-sha256-chip = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
 gosh-zk-snark-halo2-utils = { git = "https://github.com/gosh-sh/gosh-zk-snark-halo2-utils", branch = "main" }
 pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
+tvm_vm = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v2.25.2-rc.an", features = ["gosh"] }
+tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v2.25.2-rc.an" }
+tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v2.25.2-rc.an" }
 
 # Async + networking
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -28,6 +43,9 @@ hex = "0.4"
 base64 = "0.22"
 num-bigint = "0.4"
 
+# Hashing
+sha2 = "0.10"
+
 # Utilities
 anyhow = "1"
 tracing = "0.1"
@@ -36,6 +54,7 @@ rand = "0.8"
 
 # Local crates
 bridge-prover-lib = { path = "bridge-prover-lib" }
+bridge-event-prover-lib = { path = "bridge-event-prover-lib" }
 
 [patch.crates-io]
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main" }

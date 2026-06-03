@@ -1,33 +1,73 @@
+//! Bridge Prover Daemon — processes key blocks with Circuit 1a + Circuit 2.
+//!
+//! Flow:
+//! 1. Connect to local Docker node via GraphQL
+//! 2. Fetch BK set, initialize keys for both circuits
+//! 3. Wait for first key block (initialization)
+//! 4. For each subsequent key block:
+//!    a. Fetch attestation → generate Circuit 1a proof
+//!    b. Build layer hashes preimage + chain proofs → generate Circuit 2 proof
+//!    c. Send combined proof to verifier via IPC
+//!    d. Update state
+
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use tracing::{error, info, warn};
 
+use bridge_prover_lib::Fr;
+use bridge_prover_lib::THINNING_FACTOR_P;
+use halo2_base::halo2_proofs::halo2curves::group::ff::PrimeField;
+
 use bridge_prover_lib::attestation_fetcher;
-use bridge_prover_lib::gql_client;
+use bridge_prover_lib::bootstrap::{self, BootstrapSeed};
+use bridge_prover_lib::bridge_state::BridgeState;
+use bridge_prover_lib::gql_client::{self, GqlClient};
 use bridge_prover_lib::ipc;
 use bridge_prover_lib::keys::KeyManager;
+use bridge_prover_lib::layer_prover;
 use bridge_prover_lib::poseidon;
 use bridge_prover_lib::prover;
 
-const MAX_BLOCKS_TO_PROCESS: u32 = 10;
-const SLEEP_BETWEEN_BLOCKS: Duration = Duration::from_secs(5);
+/// Default GraphQL endpoint when `BRIDGE_GQL_ENDPOINT` is not set. Targets a
+/// local Docker devnet running `make run` in the acki-nacki repo. For shellnet
+/// or any other deployment set `BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql`.
+const DEFAULT_GQL_ENDPOINT: &str = "http://localhost/graphql";
+
+/// Env var: overrides [`DEFAULT_GQL_ENDPOINT`]. Read once at startup.
+const ENV_GQL_ENDPOINT: &str = "BRIDGE_GQL_ENDPOINT";
+
+/// Env var: explicit mid-chain bootstrap seed seqno. When set, the daemon
+/// skips the auto-latest discovery loop and seeds directly from this block.
+/// Value MUST be > 0 and divisible by `W * P` (= [`HISTORY_WINDOW_SIZE`] *
+/// [`THINNING_FACTOR_P`]), so the first proven target sits exactly one bundle
+/// later — same spacing as steady state.
+const ENV_BOOTSTRAP_SEQNO: &str = "BRIDGE_BOOTSTRAP_SEQNO";
+
+// History window size — pulled from the vendored poseidon_dense constant so
+// the prover and verifier always agree without depending on node-block-client.
+const HISTORY_WINDOW_SIZE: u64 =
+    bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE as u64;
+
+/// How often to log a heartbeat summary while the loop is running.
+const STATS_LOG_INTERVAL: Duration = Duration::from_secs(60);
+const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const SLEEP_ON_RETRY: Duration = Duration::from_secs(5);
-const INITIAL_WAIT: Duration = Duration::from_secs(5);
-const VERIFIER_TIMEOUT: Duration = Duration::from_secs(120);
-const GQL_ENDPOINT: &str = "https://shellnet.ackinacki.org/graphql";
+const VERIFIER_TIMEOUT: Duration = Duration::from_secs(300);
 const PARAMS_DIR: &str = "./params";
 const LOGS_DIR: &str = "./logs";
+const STATE_FILE: &str = "./state/prover_state.json";
 const BK_SET_CONFIG: &str = "./bk_set.json";
 
 #[derive(Default)]
 struct Stats {
-    blocks_processed: u32,
-    primary_attestations: u32,
-    fallback_attestations: u32,
-    skipped_blocks: u32,
+    key_blocks_processed: u32,
+    primary_proofs_ok: u32,
+    layer_proofs_ok: u32,
     verification_ok: u32,
     verification_failed: u32,
     total_proof_time: Duration,
@@ -43,163 +83,403 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     std::fs::create_dir_all(LOGS_DIR).ok();
+    std::fs::create_dir_all("state").ok();
     ipc::ensure_proofs_dir();
 
-    info!("=== Bridge Prover Daemon ===");
-    info!("GQL endpoint: {}", GQL_ENDPOINT);
-    info!("max blocks: {}", MAX_BLOCKS_TO_PROCESS);
+    // Env-driven config — no CLI parser needed (only two knobs). Both read
+    // once at startup and logged for the operator's benefit.
+    let gql_endpoint = std::env::var(ENV_GQL_ENDPOINT)
+        .unwrap_or_else(|_| DEFAULT_GQL_ENDPOINT.to_string());
+    let bundle_size = HISTORY_WINDOW_SIZE * THINNING_FACTOR_P;
+    let explicit_bootstrap_seqno: Option<u64> = match std::env::var(ENV_BOOTSTRAP_SEQNO) {
+        Ok(v) => {
+            let n: u64 = v.parse().with_context(|| {
+                format!("{} must be a positive integer, got {:?}", ENV_BOOTSTRAP_SEQNO, v)
+            })?;
+            anyhow::ensure!(
+                n > 0 && n % bundle_size == 0,
+                "{}={} must be > 0 and divisible by W*P={}",
+                ENV_BOOTSTRAP_SEQNO,
+                n,
+                bundle_size
+            );
+            Some(n)
+        }
+        Err(_) => None,
+    };
+
+    info!("=== Bridge Prover Daemon (Circuit 1a + Circuit 2) ===");
+    info!("GQL endpoint: {}", gql_endpoint);
+    info!("history window size: W = {}", HISTORY_WINDOW_SIZE);
+    info!("thinning factor:     P = {} (prove every {}-th key block, bundle = {} blocks)",
+          THINNING_FACTOR_P, THINNING_FACTOR_P, bundle_size);
+    match explicit_bootstrap_seqno {
+        Some(n) => info!("bootstrap mode: EXPLICIT seed seqno = {} (from {})", n, ENV_BOOTSTRAP_SEQNO),
+        None    => info!("bootstrap mode: AUTO-LATEST (seed at next W*P-aligned key block after chain head)"),
+    }
+    info!("running indefinitely; send SIGINT (Ctrl-C) to shut down cleanly");
+
+    // Graceful-shutdown flag flipped by the Ctrl-C handler. Checked at the top
+    // of each loop iteration so we never tear down mid-proof.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    {
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                tracing::info!("Ctrl-C received, shutting down at next safe point...");
+                s.store(true, Ordering::SeqCst);
+            }
+        });
+    }
 
     // 1. Connect to node.
-    let gql = gql_client::create_client(GQL_ENDPOINT)?;
+    let gql = gql_client::create_client(&gql_endpoint)?;
     info!("GraphQL client created");
 
     // 2. Fetch BK set.
     let bk_set = load_bk_set(&gql).await?;
     let (bk_set_commitment, _) = poseidon::compute_bk_set_poseidon(&bk_set);
-    info!(
-        "BK set: {} signers, commitment={:?}",
-        bk_set.len(),
-        bk_set_commitment
-    );
+    info!("BK set: {} signers, commitment={:?}", bk_set.len(), bk_set_commitment);
 
-    // 3. Initialize key manager (loads SRS, tries cached VK/PK).
+    // 3. Initialize key manager (both circuits).
     info!("loading keys...");
     let mut key_manager = KeyManager::new(Path::new(PARAMS_DIR));
     key_manager.ensure_primary_keys(&bk_set)?;
-    info!("keys ready");
+    info!("primary keys ready");
+    key_manager.ensure_layer_keys()?;
+    info!("layer keys ready");
 
-    // 4. Find a recent starting block (we need blocks whose attestations use the current BK set).
-    info!("finding starting block...");
-    tokio::time::sleep(INITIAL_WAIT).await;
-    let blocks = gql.query_latest_blocks(20).await?;
-    let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
-    // Start a few blocks behind the latest so attestations are available.
-    let start_seq = if latest_seq > 3 { (latest_seq - 3) as u32 } else { 1 };
-    let mut last_seen_seqno: u32 = start_seq.saturating_sub(1);
-    info!(
-        "latest block on node: seq_no={}, starting from: seq_no={} (last_seen={})",
-        latest_seq, start_seq, last_seen_seqno
-    );
+    // 4. Load or create state.
+    let mut state = BridgeState::load(STATE_FILE, HISTORY_WINDOW_SIZE as usize)?;
+    info!("state loaded: initialized={}, last_key_block={}", state.initialized, state.stored_last_seen_block_seq_no);
 
-    // 5. Main loop.
+    // 5. If not initialized, derive bootstrap seed from a key block and persist
+    //    it for the verifier.
+    //
+    //    The prover plays the role of the "deployer" in the production analog:
+    //    it queries the node for the chosen key block's envelope, applies the
+    //    seed to its own state, AND writes `state/bootstrap_seed.json` so the
+    //    verifier (which has no node connection) can mirror the same L1 entry.
+    //    See `bridge_prover_lib::bootstrap` for the full rationale.
+    //
+    //    Seed seqno selection:
+    //      - Explicit (env BRIDGE_BOOTSTRAP_SEQNO=N): use N directly. Already
+    //        validated above to be > 0 and divisible by W*P.
+    //      - Auto: round chain head UP to the next multiple of W*P, then wait
+    //        for the chain to reach it. This is the shellnet / mid-chain mode:
+    //        no need to walk back to genesis, and the first proven target sits
+    //        exactly one bundle (W*P blocks) past the seed — same spacing as
+    //        steady state, so no asymmetric "first bundle" gap.
+    if !state.initialized {
+        let bk_hash_bytes: [u8; 32] = bk_set_commitment.to_repr();
+
+        // Pick the seed seqno ONCE here, before entering the wait loop. In auto
+        // mode we pin it to the next W*P boundary strictly past the current
+        // chain head; recomputing inside the loop would let the target chase
+        // the head every time it crossed a boundary and the daemon would never
+        // start. In explicit mode it's already fixed by env var.
+        let seed_seqno = match explicit_bootstrap_seqno {
+            Some(n) => n,
+            None    => {
+                let blocks = gql.query_latest_blocks(5).await?;
+                let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
+                let n = ((latest_seq / bundle_size) + 1) * bundle_size;
+                info!("auto-mode: chain head at seq_no={}, pinned seed seq_no={}", latest_seq, n);
+                n
+            }
+        };
+
+        let seed: BootstrapSeed = loop {
+            let blocks = gql.query_latest_blocks(5).await?;
+            let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
+
+            if latest_seq < seed_seqno {
+                info!(
+                    "latest block seq_no={}, waiting for chain to reach seed seq_no={} ({} blocks to go)...",
+                    latest_seq, seed_seqno, seed_seqno - latest_seq
+                );
+                tokio::time::sleep(POLL_INTERVAL).await;
+                continue;
+            }
+
+            info!("seed key block available at seq_no {} (chain head at {})", seed_seqno, latest_seq);
+            match bootstrap::fetch_from_node(&gql, seed_seqno, bk_hash_bytes).await {
+                Ok(s) => {
+                    info!(
+                        "seed block: {} history_proofs layers, block_height={}",
+                        s.layer_hashes.len(),
+                        s.block_height,
+                    );
+                    break s;
+                }
+                Err(e) => {
+                    warn!("could not fetch seed key block envelope at seq_no={} ({}), retrying...",
+                          seed_seqno, e);
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                    continue;
+                }
+            }
+        };
+
+        seed.apply(&mut state);
+        state.save(STATE_FILE)?;
+        seed.save(bootstrap::DEFAULT_SEED_PATH)?;
+        info!(
+            "initialized from seed: seqno={}, height={}, layers={}; seed written to {}",
+            seed.block_seq_no,
+            seed.block_height,
+            seed.layer_hashes.len(),
+            bootstrap::DEFAULT_SEED_PATH,
+        );
+    }
+
+    // 6. Main processing loop — runs until Ctrl-C.
     let mut stats = Stats::default();
     let t_total = Instant::now();
+    let mut last_stats_log = Instant::now();
 
-    while stats.blocks_processed < MAX_BLOCKS_TO_PROCESS {
-        let target_seqno = last_seen_seqno + 1;
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            info!("shutdown flag set, exiting main loop");
+            break;
+        }
+        if last_stats_log.elapsed() >= STATS_LOG_INTERVAL {
+            info!(
+                "[heartbeat] processed={}, primary_ok={}, layer_ok={}, verify_ok={}, fail={}, uptime={:?}",
+                stats.key_blocks_processed,
+                stats.primary_proofs_ok,
+                stats.layer_proofs_ok,
+                stats.verification_ok,
+                stats.verification_failed,
+                t_total.elapsed()
+            );
+            last_stats_log = Instant::now();
+        }
 
-        match attestation_fetcher::fetch_attestation_for_block(&gql, target_seqno).await {
-            Ok(att) => {
-                if att.target_type == 0 {
-                    stats.primary_attestations += 1;
-                } else {
-                    stats.fallback_attestations += 1;
-                }
+        // Poll for new blocks.
+        let blocks = gql.query_latest_blocks(5).await?;
+        let latest_seq = blocks.iter().map(|(_, s)| *s).max().unwrap_or(0);
 
-                if att.target_type != 0 {
-                    info!(
-                        "block {}: fallback attestation (type={}), skipping for now",
-                        target_seqno, att.target_type
-                    );
-                    stats.skipped_blocks += 1;
-                    last_seen_seqno = target_seqno;
-                    continue;
-                }
+        // Find next thinned key block to process (advances by W * P, not W —
+        // see bridge_prover_lib::THINNING_FACTOR_P).
+        let next_key_seqno = find_next_thinned_key_block(
+            state.stored_last_seen_block_seq_no,
+            latest_seq,
+            HISTORY_WINDOW_SIZE,
+            THINNING_FACTOR_P,
+        );
 
-                info!("block {}: primary attestation found, {} signers, indices={:?}",
-                    target_seqno, att.signature_occurrences.len(),
-                    att.signature_occurrences.keys().collect::<Vec<_>>());
+        if next_key_seqno.is_none() {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue;
+        }
+        let target_seqno = next_key_seqno.unwrap();
+        info!("=== Processing key block at height {} ===", target_seqno);
 
-                // Verify all attestation signers are in our BK set.
-                let missing: Vec<u16> = att.signature_occurrences.keys()
-                    .filter(|idx| !bk_set.contains_key(idx))
-                    .cloned()
+        // Fetch attestation for key block (Circuit 1a input).
+        let attestation = match attestation_fetcher::fetch_attestation_for_block(
+            &gql, target_seqno as u32,
+        ).await {
+            Ok(att) => att,
+            Err(e) => {
+                warn!("key block {}: attestation not available ({}), retrying...", target_seqno, e);
+                tokio::time::sleep(SLEEP_ON_RETRY).await;
+                continue;
+            }
+        };
+
+        if attestation.target_type != 0 {
+            info!("key block {}: fallback attestation, skipping", target_seqno);
+            // Move past this key block (cursor advance only, no layer append).
+            state.stored_last_seen_block_seq_no = target_seqno;
+            state.stored_last_seen_block_height = target_seqno;
+            state.save(STATE_FILE)?;
+            continue;
+        }
+
+        // Verify signers are in BK set.
+        let missing: Vec<u16> = attestation.signature_occurrences.keys()
+            .filter(|idx| !bk_set.contains_key(idx))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            warn!("key block {}: signers {:?} not in BK set, skipping", target_seqno, missing);
+            state.stored_last_seen_block_seq_no = target_seqno;
+            state.stored_last_seen_block_height = target_seqno;
+            state.save(STATE_FILE)?;
+            continue;
+        }
+
+        let t_proof = Instant::now();
+
+        // ---- Circuit 1a: Primary Attestation Proof ----
+        // Load PK on demand, unload after to free ~3.7 GB before Circuit 2.
+        info!("key block {}: loading primary PK...", target_seqno);
+        key_manager.load_primary_pk()?;
+
+        info!("key block {}: generating Circuit 1a proof...", target_seqno);
+        let t_primary = Instant::now();
+        let primary_proof = match prover::generate_primary_proof(
+            &key_manager,
+            &attestation.raw_bytes,
+            &bk_set,
+            state.stored_last_seen_block_seq_no as u32,
+        ) {
+            Ok(output) => {
+                stats.primary_proofs_ok += 1;
+                key_manager.unload_primary_pk();
+                output
+            }
+            Err(e) => {
+                error!("key block {}: Circuit 1a proof failed: {}", target_seqno, e);
+                key_manager.unload_primary_pk();
+                stats.verification_failed += 1;
+                stats.key_blocks_processed += 1;
+                state.stored_last_seen_block_seq_no = target_seqno;
+                state.stored_last_seen_block_height = target_seqno;
+                state.save(STATE_FILE)?;
+                continue;
+            }
+        };
+        let primary_proof_gen_ms = t_primary.elapsed().as_millis() as u64;
+        info!(
+            "key block {}: Circuit 1a proof generated in {} ms",
+            target_seqno, primary_proof_gen_ms
+        );
+
+        // ---- Circuit 2: Layer Hashes Movement Proof ----
+        // Inputs are reconstructed from real block data:
+        //   - preimage: history_proofs parsed from the target block's CommonSection
+        //   - siblings: 8-leaf SHA-256 Merkle path for L0 (Poseidon over the preimage)
+        //   - chain_links: real Poseidon Merkle proofs walked across intermediate
+        //     key blocks fetched via GraphQL (see real_chain_builder).
+        // Load layer PK on demand, unload after to free ~2.8 GB.
+        info!("key block {}: loading layer PK...", target_seqno);
+        key_manager.load_layer_pk()?;
+
+        info!("key block {}: generating Circuit 2 proof...", target_seqno);
+        let t_layer = Instant::now();
+        let layer_proof = match generate_layer_proof_for_key_block(
+            &key_manager,
+            &gql,
+            &state,
+            target_seqno,
+            &bk_set_commitment,
+        ).await {
+            Ok(output) => {
+                stats.layer_proofs_ok += 1;
+                key_manager.unload_layer_pk();
+                output
+            }
+            Err(e) => {
+                error!("key block {}: Circuit 2 proof failed: {}", target_seqno, e);
+                key_manager.unload_layer_pk();
+                stats.verification_failed += 1;
+                stats.key_blocks_processed += 1;
+                state.stored_last_seen_block_seq_no = target_seqno;
+                state.stored_last_seen_block_height = target_seqno;
+                state.save(STATE_FILE)?;
+                continue;
+            }
+        };
+        let layer_proof_gen_ms = t_layer.elapsed().as_millis() as u64;
+        info!(
+            "key block {}: Circuit 2 proof generated in {} ms",
+            target_seqno, layer_proof_gen_ms
+        );
+
+        let proof_time = t_proof.elapsed();
+        stats.total_proof_time += proof_time;
+        info!("key block {}: both proofs generated in {:?}", target_seqno, proof_time);
+
+        // Fetch the envelope once now to extract (a) the authoritative
+        // thread-anchored block_height for the ProofRequest, and (b) the
+        // layer-hash bundle reused below by `append_bundle`. The envelope is
+        // immutable once committed so doing this before vs. after the verifier
+        // call is equivalent.
+        let (state_layer_hashes, observed_height): (Vec<([u8; 32], u8)>, u64) = match gql
+            .query_proof_block_by_seqno(target_seqno)
+            .await
+        {
+            Ok(block) => {
+                let hashes = block.history_proofs.iter()
+                    .map(|(&layer, root)| (*root, layer))
                     .collect();
-                if !missing.is_empty() {
-                    warn!(
-                        "block {}: attestation has signers {:?} not in current BK set {:?}, skipping \
-                         (BK set may have rotated since this block was produced)",
-                        target_seqno, missing, bk_set.keys().collect::<Vec<_>>()
-                    );
-                    stats.skipped_blocks += 1;
-                    last_seen_seqno = target_seqno;
-                    continue;
-                }
-
-                // The raw_bytes from BOC parsing are already in the correct
-                // bincode Envelope<AttestationData> format.
-                let att_bytes = &att.raw_bytes;
-
-                // Generate proof.
-                let t = Instant::now();
-                let proof_output = match prover::generate_primary_proof(
-                    &key_manager,
-                    att_bytes,
-                    &bk_set,
-                    last_seen_seqno,
-                ) {
-                    Ok(output) => output,
-                    Err(e) => {
-                        error!("block {}: proof generation failed: {}", target_seqno, e);
-                        log_witnesses(target_seqno, att_bytes, &bk_set, last_seen_seqno);
-                        stats.verification_failed += 1;
-                        stats.blocks_processed += 1;
-                        last_seen_seqno = target_seqno;
-                        continue;
-                    }
-                };
-                let proof_time = t.elapsed();
-                stats.total_proof_time += proof_time;
-                info!("block {}: proof generated in {:?}", target_seqno, proof_time);
-
-                // Write proof for verifier.
-                ipc::write_proof(target_seqno, &proof_output)?;
-                info!("block {}: proof written, waiting for verifier...", target_seqno);
-
-                // Wait for verifier result.
-                match ipc::wait_for_result(target_seqno, VERIFIER_TIMEOUT).await {
-                    Ok(result) => {
-                        if result.verified {
-                            info!("block {}: VERIFIED OK", target_seqno);
-                            stats.verification_ok += 1;
-                        } else {
-                            error!(
-                                "block {}: VERIFICATION FAILED: {}",
-                                target_seqno,
-                                result.error.as_deref().unwrap_or("unknown")
-                            );
-                            log_witnesses(target_seqno, &att_bytes, &bk_set, last_seen_seqno);
-                            stats.verification_failed += 1;
-                        }
-                    }
-                    Err(e) => {
-                        error!("block {}: verifier timeout/error: {}", target_seqno, e);
-                        stats.verification_failed += 1;
-                    }
-                }
-
-                stats.blocks_processed += 1;
-                last_seen_seqno = target_seqno;
-                tokio::time::sleep(SLEEP_BETWEEN_BLOCKS).await;
+                (hashes, block.height)
             }
             Err(e) => {
                 warn!(
-                    "block {}: attestation not available ({}), retrying...",
+                    "key block {}: GQL block fetch failed ({}), using seq_no as height fallback",
                     target_seqno, e
                 );
-                tokio::time::sleep(SLEEP_ON_RETRY).await;
+                (Vec::new(), target_seqno)
+            }
+        };
+
+        // Write combined proof for verifier.
+        let request = ipc::ProofRequest {
+            schema_version: ipc::PROOF_REQUEST_SCHEMA_VERSION,
+            block_seq_no: target_seqno as u32,
+            block_height: observed_height,
+            last_seen_block_seqno: state.stored_last_seen_block_seq_no as u32,
+            block_id_hex: ipc::fr_to_hex(&primary_proof.block_id_fr),
+            primary_proof_hex: hex::encode(&primary_proof.proof_bytes),
+            layer_proof_hex: hex::encode(&layer_proof.proof_bytes),
+            layer_block_id_hex: ipc::fr_to_hex(&layer_proof.block_id_fr),
+            bk_set_poseidon_hash_hex: ipc::fr_to_hex(&layer_proof.bk_set_poseidon_hash_fr),
+            num_layers: layer_proof.num_layers,
+            layer_hash_frs_hex: layer_proof.layer_hash_frs.iter().map(|fr| ipc::fr_to_hex(fr)).collect(),
+            prev_max_level_layer_hash_hex: ipc::fr_to_hex(&layer_proof.prev_max_level_layer_hash_fr),
+            primary_proof_gen_ms,
+            layer_proof_gen_ms,
+        };
+        ipc::write_combined_proof(&request)?;
+        info!("key block {}: proof written, waiting for verifier...", target_seqno);
+
+        // Wait for verifier result.
+        match ipc::wait_for_result(target_seqno as u32, VERIFIER_TIMEOUT).await {
+            Ok(result) => {
+                if result.primary_verified && result.layer_verified {
+                    info!("key block {}: BOTH VERIFIED OK", target_seqno);
+                    stats.verification_ok += 1;
+                } else {
+                    error!(
+                        "key block {}: VERIFICATION FAILED: primary={}, layer={}, err={:?}",
+                        target_seqno, result.primary_verified, result.layer_verified, result.error
+                    );
+                    stats.verification_failed += 1;
+                }
+            }
+            Err(e) => {
+                error!("key block {}: verifier timeout/error: {}", target_seqno, e);
+                stats.verification_failed += 1;
             }
         }
+
+        // ALWAYS update state with the REAL layer hashes + block_height
+        // captured pre-verifier above, regardless of verification result. This
+        // ensures subsequent chain proofs use the correct prev_hash even after
+        // timeouts or failures, and that the heights[] slot reflects what the
+        // node committed (not just our seq_no proxy).
+        let bk_hash_bytes: [u8; 32] = bk_set_commitment.to_repr();
+        state.append_bundle(
+            &state_layer_hashes,
+            observed_height,
+            target_seqno,
+            bk_hash_bytes,
+        );
+
+        stats.key_blocks_processed += 1;
+        state.save(STATE_FILE)?;
     }
 
     // Print summary.
     let elapsed = t_total.elapsed();
     info!("\n=== PROVER SUMMARY ===");
     info!("total time:              {:?}", elapsed);
-    info!("blocks processed:        {}", stats.blocks_processed);
-    info!("primary attestations:    {}", stats.primary_attestations);
-    info!("fallback attestations:   {}", stats.fallback_attestations);
-    info!("skipped blocks:          {}", stats.skipped_blocks);
+    info!("key blocks processed:    {}", stats.key_blocks_processed);
+    info!("primary proofs OK:       {}", stats.primary_proofs_ok);
+    info!("layer proofs OK:         {}", stats.layer_proofs_ok);
     info!("verification OK:         {}", stats.verification_ok);
     info!("verification FAILED:     {}", stats.verification_failed);
     if stats.verification_ok > 0 {
@@ -212,8 +492,131 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn load_bk_set(gql: &gql_client::GqlClient) -> anyhow::Result<HashMap<u16, Vec<u8>>> {
-    // Try GraphQL first.
+/// Find the next *thinned* key block to process after `last_key_seqno`.
+///
+/// The daemon advances in steps of `W * P` blocks: it proves only every
+/// `P`-th master key block, with each Circuit 2 bundle internally chaining
+/// `P` consecutive layer-1 windows via `verify_chain_of_dense_proofs`.
+/// The bootstrap seed sits on a `W*P`-aligned key block (either chosen
+/// explicitly via `BRIDGE_BOOTSTRAP_SEQNO` or computed as the next `W*P`
+/// boundary past chain head in auto mode); from there the first thinned
+/// target is `seed + W*P`, then `seed + 2*W*P`, etc. — symmetric spacing.
+fn find_next_thinned_key_block(
+    last_key_seqno: u64,
+    latest_seqno: u64,
+    window_size: u64,
+    thinning_factor: u64,
+) -> Option<u64> {
+    let step = window_size * thinning_factor;
+    // Next multiple of `step` strictly greater than `last_key_seqno`.
+    // Works for both bootstrap (`last == window_size`) and steady state
+    // (`last == k * step`).
+    let next = ((last_key_seqno / step) + 1) * step;
+    if next <= latest_seqno {
+        Some(next)
+    } else {
+        None
+    }
+}
+
+/// Generate Circuit 2 proof for a key block using real block data and real chain proofs.
+///
+/// Fetches the full AckiNackiBlock `data` field, parses it to extract:
+/// - Layer hashes (from history_proofs in CommonSection)
+/// - BK set Poseidon hash (from block_keeper_set_change_proof_data)
+/// - Merkle tree siblings for L0 in the 8-leaf block_id tree
+///
+/// Chain proofs are built from real intermediate block data by reconstructing
+/// the Poseidon Merkle trees that the node produced.
+async fn generate_layer_proof_for_key_block(
+    key_manager: &KeyManager,
+    gql: &GqlClient,
+    state: &BridgeState,
+    target_seqno: u64,
+    bk_set_commitment: &Fr,
+) -> anyhow::Result<layer_prover::LayerProofOutput> {
+    use bridge_prover_lib::block_id_tree;
+    use bridge_prover_lib::real_chain_builder;
+
+    info!("fetching block proof data for seq={}...", target_seqno);
+    let block = gql
+        .query_proof_block_by_seqno(target_seqno)
+        .await
+        .context("failed to fetch block proof data")?;
+
+    let leaves = block.block_merkle_tree_leaves.ok_or_else(|| {
+        anyhow::anyhow!(
+            "block {} has no block_merkle_tree_leaves in GQL — node must expose them",
+            target_seqno
+        )
+    })?;
+
+    info!(
+        "parsed: history_proofs={} layers",
+        block.history_proofs.len(),
+    );
+    if block.history_proofs.is_empty() {
+        anyhow::bail!("block {} has no history_proofs", target_seqno);
+    }
+
+    // 1. Build layer_hashes_preimage from history_proofs.
+    let num_layers = block.history_proofs.len() as u8;
+    let mut root_hashes = Vec::with_capacity(10);
+    for i in 1..=10u8 {
+        if let Some(root) = block.history_proofs.get(&i) {
+            root_hashes.push(*root);
+        } else {
+            root_hashes.push([0u8; 32]);
+        }
+    }
+    let preimage = block_id_tree::build_layer_hashes_preimage(num_layers as usize, &root_hashes);
+
+    // 2. Build the 8-leaf SHA-256 Merkle tree from the GQL leaves and pull siblings for L0.
+    let tree = block_id_tree::BlockIdMerkleTree::from_leaves(leaves);
+    let siblings = tree.siblings_for_l0();
+    info!(
+        "block_id from GQL leaves merkle root: {}",
+        hex::encode(tree.block_id())
+    );
+
+    // 3. BK set Poseidon hash — comes from the loaded BLS pubkeys. NOT from
+    // `leaves[2]`: that leaf is a *SHA-256* hash of the old bk_set (used to
+    // commit the BK rotation in the block_id Merkle tree), which is a
+    // different commitment than the Poseidon hash Circuit 1a's BLS message
+    // hash is built over.
+    let bk_set_hash_fr = *bk_set_commitment;
+
+    // 4. Build history_proofs map (already in block.history_proofs).
+    let history_proofs_map = &block.history_proofs;
+
+    // 5. Build REAL chain proofs from intermediate block data.
+    let chain_result = real_chain_builder::build_real_chain(
+        gql,
+        state,
+        history_proofs_map,
+        target_seqno,
+        HISTORY_WINDOW_SIZE,
+    )
+    .await
+    .context("failed to build real chain proofs")?;
+
+    info!("using REAL chain proofs ({} steps)", chain_result.num_steps);
+
+    let prev_hash_fr = gosh_dense_balanced_tree::bytes_to_fr(&chain_result.prev_hash);
+
+    // 6. Generate Circuit 2 proof with real preimage, real siblings, real chain.
+    layer_prover::generate_layer_proof(
+        key_manager,
+        &preimage,
+        &siblings,
+        prev_hash_fr,
+        chain_result.num_steps,
+        &chain_result.chain_links,
+        bk_set_hash_fr,
+    )
+}
+
+async fn load_bk_set(gql: &GqlClient) -> anyhow::Result<HashMap<u16, Vec<u8>>> {
     match bridge_prover_lib::bk_set_fetcher::fetch_bk_set(gql).await {
         Ok(bk_set) => return Ok(bk_set),
         Err(e) => {
@@ -221,31 +624,6 @@ async fn load_bk_set(gql: &gql_client::GqlClient) -> anyhow::Result<HashMap<u16,
             info!("trying config file fallback: {}", BK_SET_CONFIG);
         }
     }
-    // Fallback to config file.
     bridge_prover_lib::bk_set_fetcher::load_bk_set_from_config(BK_SET_CONFIG)
         .context("failed to load BK set from both GraphQL and config file")
-}
-
-fn log_witnesses(
-    seq_no: u32,
-    att_bytes: &[u8],
-    bk_set: &HashMap<u16, Vec<u8>>,
-    last_seen: u32,
-) {
-    let log_path = format!("{}/block_{:06}_witnesses.json", LOGS_DIR, seq_no);
-    let bk_set_hex: HashMap<String, String> = bk_set
-        .iter()
-        .map(|(k, v)| (k.to_string(), hex::encode(v)))
-        .collect();
-    let log_data = serde_json::json!({
-        "block_seq_no": seq_no,
-        "attestation_bytes_hex": hex::encode(att_bytes),
-        "bk_set": bk_set_hex,
-        "last_seen_block_seqno": last_seen,
-    });
-    if let Err(e) = std::fs::write(&log_path, serde_json::to_string_pretty(&log_data).unwrap()) {
-        error!("failed to write witness log to {}: {}", log_path, e);
-    } else {
-        info!("witnesses logged to {}", log_path);
-    }
 }
