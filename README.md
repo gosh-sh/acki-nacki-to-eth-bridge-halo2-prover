@@ -112,8 +112,8 @@ acki-nacki-to-eth-bridge-halo2-prover/
 
 | Repo | Branch |
 |---|---|
-| `gosh-sh/acki-nacki-to-eth-bridge-halo2-prover` (this repo) | `full_bridge_flow_test_single_final_root` |
-| `gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits` | `circuit4-single-final-root` (pinned via this repo's `Cargo.toml`) |
+| `gosh-sh/acki-nacki-to-eth-bridge-halo2-prover` (this repo) | `main` |
+| `gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits` | `main` (pinned via this repo's `Cargo.toml`) |
 
 ---
 
