@@ -4,6 +4,8 @@ pub mod block_data_parser;
 pub mod attestation_fetcher;
 pub mod bk_set_fetcher;
 pub mod poseidon;
+pub mod poseidon_dense;
+pub mod types;
 pub mod keys;
 pub mod prover;
 pub mod verifier;
@@ -25,7 +27,7 @@ pub use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 ///
 /// Hard constraints (checked at runtime by `chain_proof_builder::build_chain_proofs`):
 ///   * `P <= MAX_CHAIN_LEN = 11` (from `gosh-dense-balanced-tree`)
-///   * `P` must divide `W = node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE`
+///   * `P` must divide `W = crate::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE`
 ///     so the on-chain `layerWindows[L≥2]` cadence is unchanged.
 ///
 /// Current test config: `W = 8`, `P = 4`. Worst-case chain length is `P = 4` for

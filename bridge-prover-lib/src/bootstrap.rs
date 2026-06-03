@@ -124,20 +124,17 @@ pub async fn fetch_from_node(
     first_key_seqno: u64,
     bk_set_commitment: [u8; 32],
 ) -> anyhow::Result<BootstrapSeed> {
-    use node_block_client::BLSSignedEnvelope;
-
-    let envelope = gql
-        .query_block_envelope(first_key_seqno)
+    let block = gql
+        .query_proof_block_by_seqno(first_key_seqno)
         .await
         .with_context(|| {
-            format!("could not fetch first key block envelope at seq_no={}", first_key_seqno)
+            format!("could not fetch first key block at seq_no={}", first_key_seqno)
         })?;
-    let cs = envelope.data().common_section();
-    let hp = cs.history_proofs();
-    let block_height = *cs.block_height().height();
-    let layer_hashes: Vec<([u8; 32], u8)> = hp
+    let block_height = block.height;
+    let layer_hashes: Vec<([u8; 32], u8)> = block
+        .history_proofs
         .iter()
-        .map(|(&layer, proof)| (*proof.root_hash(), layer))
+        .map(|(&layer, root)| (*root, layer))
         .collect();
     Ok(BootstrapSeed {
         schema_version: SEED_SCHEMA_VERSION,

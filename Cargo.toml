@@ -30,7 +30,6 @@ pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
 tvm_vm = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v2.25.2-rc.an", features = ["gosh"] }
 tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v2.25.2-rc.an" }
 tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", tag = "v2.25.2-rc.an" }
-node-block-client = { git = "https://github.com/gosh-sh/acki-nacki.git", branch = "test_bridge_poseidon_dex" }
 
 # Async + networking
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -59,14 +58,6 @@ bridge-event-prover-lib = { path = "bridge-event-prover-lib" }
 
 [patch.crates-io]
 halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main" }
-
-# Local override so the daemons pick up the current W in
-# acki-nacki/node/libs/node-block-client/src/history_proof.rs without needing
-# to push to the shared branch. Currently W=128 (production scale-up). Revert
-# this block when the W change is merged into the shared
-# `test_bridge_poseidon_dex` branch.
-[patch."https://github.com/gosh-sh/acki-nacki.git"]
-node-block-client = { path = "../acki-nacki/node/libs/node-block-client" }
 
 [profile.dev]
 opt-level = 3

@@ -48,12 +48,10 @@ const ENV_GQL_ENDPOINT: &str = "BRIDGE_GQL_ENDPOINT";
 /// later — same spacing as steady state.
 const ENV_BOOTSTRAP_SEQNO: &str = "BRIDGE_BOOTSTRAP_SEQNO";
 
-// History window size — imported from the node-block-client crate so it can
-// never drift from the node. To change the window size, edit
-// `node/libs/node-block-client/src/history_proof.rs` in acki-nacki and bump
-// the git rev of node-block-client here.
+// History window size — pulled from the vendored poseidon_dense constant so
+// the prover and verifier always agree without depending on node-block-client.
 const HISTORY_WINDOW_SIZE: u64 =
-    node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE as u64;
+    bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE as u64;
 
 /// How often to log a heartbeat summary while the loop is running.
 const STATS_LOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -400,22 +398,18 @@ async fn main() -> anyhow::Result<()> {
         // immutable once committed so doing this before vs. after the verifier
         // call is equivalent.
         let (state_layer_hashes, observed_height): (Vec<([u8; 32], u8)>, u64) = match gql
-            .query_block_envelope(target_seqno)
+            .query_proof_block_by_seqno(target_seqno)
             .await
         {
-            Ok(envelope) => {
-                use node_block_client::BLSSignedEnvelope;
-                let cs = envelope.data().common_section();
-                let hp = cs.history_proofs();
-                let height = *cs.block_height().height();
-                let hashes = hp.iter()
-                    .map(|(&layer, proof)| (*proof.root_hash(), layer))
+            Ok(block) => {
+                let hashes = block.history_proofs.iter()
+                    .map(|(&layer, root)| (*root, layer))
                     .collect();
-                (hashes, height)
+                (hashes, block.height)
             }
             Err(e) => {
                 warn!(
-                    "key block {}: envelope fetch failed ({}), using seq_no as height fallback",
+                    "key block {}: GQL block fetch failed ({}), using seq_no as height fallback",
                     target_seqno, e
                 );
                 (Vec::new(), target_seqno)
@@ -543,100 +537,63 @@ async fn generate_layer_proof_for_key_block(
 ) -> anyhow::Result<layer_prover::LayerProofOutput> {
     use bridge_prover_lib::block_id_tree;
     use bridge_prover_lib::real_chain_builder;
-    use node_block_client::BLSSignedEnvelope;
 
-    // 1. Fetch block as Envelope<AckiNackiBlock> via boc deserialization.
-    info!("fetching block envelope for seq={}...", target_seqno);
-    let envelope = gql
-        .query_block_envelope(target_seqno)
+    info!("fetching block proof data for seq={}...", target_seqno);
+    let block = gql
+        .query_proof_block_by_seqno(target_seqno)
         .await
-        .context("failed to fetch block envelope")?;
+        .context("failed to fetch block proof data")?;
 
-    let common_section = envelope.data().common_section();
-    let history_proofs = common_section.history_proofs();
+    let leaves = block.block_merkle_tree_leaves.ok_or_else(|| {
+        anyhow::anyhow!(
+            "block {} has no block_merkle_tree_leaves in GQL — node must expose them",
+            target_seqno
+        )
+    })?;
 
     info!(
         "parsed: history_proofs={} layers",
-        history_proofs.len(),
+        block.history_proofs.len(),
     );
-
-    if history_proofs.is_empty() {
+    if block.history_proofs.is_empty() {
         anyhow::bail!("block {} has no history_proofs", target_seqno);
     }
 
-    // 2. Build layer_hashes_preimage from history_proofs.
-    let num_layers = history_proofs.len() as u8;
+    // 1. Build layer_hashes_preimage from history_proofs.
+    let num_layers = block.history_proofs.len() as u8;
     let mut root_hashes = Vec::with_capacity(10);
     for i in 1..=10u8 {
-        if let Some(proof) = history_proofs.get(&i) {
-            root_hashes.push(*proof.root_hash());
+        if let Some(root) = block.history_proofs.get(&i) {
+            root_hashes.push(*root);
         } else {
             root_hashes.push([0u8; 32]);
         }
     }
     let preimage = block_id_tree::build_layer_hashes_preimage(num_layers as usize, &root_hashes);
 
-    // 3. Build the 8-leaf SHA-256 Merkle tree for block_id and siblings.
-    // Use the node's own merkle_block_id computation via identifier().
-    let block_id_from_envelope = envelope.data().identifier();
-    info!(
-        "block_id from envelope: {}",
-        hex::encode(block_id_from_envelope.as_array())
-    );
-
-    // For the Merkle siblings, we still need to compute the tree ourselves.
-    // BK set hashes from block_keeper_set_change_proof_data.
-    let (bk_old, bk_new) = if let Some(proof_data) =
-        common_section.block_keeper_set_change_proof_data()
-    {
-        let th = proof_data.transition_hashes();
-        (*th.old_bk_set_hash(), *th.new_bk_set_hash())
-    } else {
-        ([0u8; 32], [0u8; 32])
-    };
-
-    // L4: TVM block repr_hash (from the AckiNackiBlock's tvm_block_hash helper).
-    let tvm_repr_hash = *envelope.data().tvm_block_hash().as_array();
-
-    // L1: SHA-256(common_section.full_hash_data())
-    let cs_hash_data = common_section.full_hash_data();
-
-    // L5: SHA-256(bincode(durable_state_update))
-    let durable_bytes = bincode::serialize(envelope.data().durable_state_update())
-        .expect("Must serialize durable state");
-
-    let tx_cnt = *envelope.data().tx_cnt() as u64;
-
-    let tree = block_id_tree::compute_block_id_tree(
-        &preimage,
-        &cs_hash_data,
-        &bk_old,
-        &bk_new,
-        &tvm_repr_hash,
-        &durable_bytes,
-        tx_cnt,
-    );
+    // 2. Build the 8-leaf SHA-256 Merkle tree from the GQL leaves and pull siblings for L0.
+    let tree = block_id_tree::BlockIdMerkleTree::from_leaves(leaves);
     let siblings = tree.siblings_for_l0();
+    info!(
+        "block_id from GQL leaves merkle root: {}",
+        hex::encode(tree.block_id())
+    );
 
-    // 4. BK set Poseidon hash.
-    let bk_set_hash_fr = {
-        let mut repr = [0u8; 32];
-        repr.copy_from_slice(&bk_old);
-        halo2_base::halo2_proofs::halo2curves::bn256::Fr::from_repr(repr)
-            .unwrap_or(*bk_set_commitment)
-    };
+    // 3. BK set Poseidon hash — comes from the loaded BLS pubkeys. NOT from
+    // `leaves[2]`: that leaf is a *SHA-256* hash of the old bk_set (used to
+    // commit the BK rotation in the block_id Merkle tree), which is a
+    // different commitment than the Poseidon hash Circuit 1a's BLS message
+    // hash is built over.
+    let bk_set_hash_fr = *bk_set_commitment;
 
-    // 5. Build history_proofs as BTreeMap<u8, [u8; 32]> for the chain builder.
-    let history_proofs_map: std::collections::BTreeMap<u8, [u8; 32]> = history_proofs
-        .iter()
-        .map(|(&layer, proof)| (layer, *proof.root_hash()))
-        .collect();
+    // 4. Build history_proofs map (already in block.history_proofs).
+    let history_proofs_map = &block.history_proofs;
 
-    // 6. Build REAL chain proofs from intermediate block data.
+    // 5. Build REAL chain proofs from intermediate block data.
     let chain_result = real_chain_builder::build_real_chain(
         gql,
         state,
-        &history_proofs_map,
+        history_proofs_map,
         target_seqno,
         HISTORY_WINDOW_SIZE,
     )
@@ -647,7 +604,7 @@ async fn generate_layer_proof_for_key_block(
 
     let prev_hash_fr = gosh_dense_balanced_tree::bytes_to_fr(&chain_result.prev_hash);
 
-    // 7. Generate Circuit 2 proof with real preimage, real siblings, real chain.
+    // 6. Generate Circuit 2 proof with real preimage, real siblings, real chain.
     layer_prover::generate_layer_proof(
         key_manager,
         &preimage,

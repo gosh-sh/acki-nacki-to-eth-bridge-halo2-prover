@@ -200,32 +200,6 @@ impl GqlClient {
         Ok(updates)
     }
 
-    /// Fetch a block's `boc` field and deserialize as `Envelope<AckiNackiBlock>`.
-    ///
-    /// The `boc` field contains the bincode-serialized `Envelope<AckiNackiBlock>`.
-    /// This gives access to block_id, envelope_hash, history_proofs, ext_messages_root,
-    /// and all other block data — same approach as `dex_data_exporter`.
-    pub async fn query_block_envelope(
-        &self,
-        seq_no: u64,
-    ) -> anyhow::Result<node_block_client::Envelope<node_block_client::AckiNackiBlock>> {
-        let tid = "00000000000000000000000000000000000000000000000000000000000000000000";
-        let q = format!(
-            r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seq_no}) {{ boc }} }} }}"#
-        );
-        let data = self.query(&q).await?;
-        let boc_str = data
-            .pointer("/blockchain/blockByHeight/boc")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::format_err!("no boc for block at seq_no={}", seq_no))?;
-        use base64::Engine;
-        let boc_bytes = base64::engine::general_purpose::STANDARD
-            .decode(boc_str)
-            .context("failed to base64-decode boc")?;
-        bincode::deserialize(&boc_bytes)
-            .with_context(|| format!("failed to deserialize Envelope from boc at seq_no={}", seq_no))
-    }
-
     /// Fetch block metadata by seq_no: hash, envelope_hash, seq_no.
     /// Used for computing block leaf hashes in chain proof construction.
     pub async fn query_block_metadata(
@@ -427,4 +401,203 @@ impl BkSetUpdateWithAttestations {
             attestations,
         })
     }
+}
+
+use std::collections::BTreeMap;
+use crate::poseidon_dense::{compute_block_leaf_hash, LayerNumber};
+use crate::types::{AccountRouting, ThreadIdentifier};
+
+/// GraphQL-fetched proof block — replaces `Envelope<AckiNackiBlock>` as the
+/// authoritative source of per-block proof data. Mirrors
+/// `acki-nacki/helpers/proof_helper/src/blockchain.rs::GqlProofBlock`.
+#[derive(Clone, Debug)]
+pub struct GqlProofBlock {
+    pub id: String,
+    pub block_id: [u8; 32],
+    pub thread_id: ThreadIdentifier,
+    pub height: u64,
+    pub envelope_hash: [u8; 32],
+    pub tracked_ext_out_messages_root: [u8; 32],
+    pub tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>>,
+    pub history_proofs: BTreeMap<LayerNumber, [u8; 32]>,
+    /// 8-leaf SHA-256 block-id Merkle leaves. May be absent on very old blocks.
+    pub block_merkle_tree_leaves: Option<[[u8; 32]; 8]>,
+}
+
+impl GqlProofBlock {
+    pub fn block_leaf_hash(&self) -> [u8; 32] {
+        compute_block_leaf_hash(
+            &self.block_id,
+            &self.envelope_hash,
+            &self.tracked_ext_out_messages_root,
+        )
+    }
+}
+
+/// Default thread_id used by the single-thread testbed.
+pub const DEFAULT_THREAD_ID_HEX: &str =
+    "00000000000000000000000000000000000000000000000000000000000000000000";
+
+const PROOF_BLOCK_FRAGMENT: &str = r#"
+  fragment ProofBlockFields on Block {
+    id
+    block_id
+    thread_id
+    height
+    envelope_hash
+    tracked_ext_out_messages_root
+    tracked_ext_out_message_hashes {
+      routing
+      message_hashes
+    }
+    history_proofs {
+      layer
+      root_hash
+    }
+    block_merkle_tree_leaves
+  }
+"#;
+
+impl GqlClient {
+    /// Fetch a `GqlProofBlock` by (thread_id, height). thread_id_hex should be
+    /// the 68-hex-char form the node emits (34 bytes).
+    pub async fn query_block_by_height(
+        &self,
+        thread_id_hex: &str,
+        height: u64,
+    ) -> anyhow::Result<GqlProofBlock> {
+        let q = format!(
+            r#"{{
+              blockchain {{
+                blockByHeight(thread_id: "{thread_id_hex}", height: {height}) {{
+                  id block_id thread_id height envelope_hash
+                  tracked_ext_out_messages_root
+                  tracked_ext_out_message_hashes {{ routing message_hashes }}
+                  history_proofs {{ layer root_hash }}
+                  block_merkle_tree_leaves
+                }}
+              }}
+            }}"#,
+        );
+        let _ = PROOF_BLOCK_FRAGMENT; // keep fragment as documentation
+        let data = self.query(&q).await?;
+        let block = data
+            .pointer("/blockchain/blockByHeight")
+            .ok_or_else(|| anyhow::format_err!("blockByHeight returned no field for height={height}"))?;
+        if block.is_null() {
+            anyhow::bail!("block at thread_id={thread_id_hex} height={height} not found");
+        }
+        parse_proof_block(block)
+    }
+
+    /// Fetch a `GqlProofBlock` on the default single-thread testbed by seq_no.
+    pub async fn query_proof_block_by_seqno(&self, seqno: u64) -> anyhow::Result<GqlProofBlock> {
+        self.query_block_by_height(DEFAULT_THREAD_ID_HEX, seqno).await
+    }
+}
+
+fn parse_proof_block(value: &serde_json::Value) -> anyhow::Result<GqlProofBlock> {
+    use std::str::FromStr;
+    let id = required_string(value, "id")?.to_string();
+    let block_id = decode_hash32(required_string(value, "block_id")?).context("block_id")?;
+    let thread_id =
+        ThreadIdentifier::try_from(required_string(value, "thread_id")?.to_string())
+            .context("thread_id")?;
+    let height = parse_u64_field(value, "height")?;
+    let envelope_hash =
+        decode_hash32(required_string(value, "envelope_hash")?).context("envelope_hash")?;
+    let tracked_ext_out_messages_root =
+        decode_hash32(required_string(value, "tracked_ext_out_messages_root")?)
+            .context("tracked_ext_out_messages_root")?;
+
+    // tracked_ext_out_message_hashes -> BTreeMap<AccountRouting, Vec<[u8;32]>>
+    let mut tracked_ext_out_messages: BTreeMap<AccountRouting, Vec<[u8; 32]>> = BTreeMap::new();
+    if let Some(arr) = value.get("tracked_ext_out_message_hashes").and_then(|v| v.as_array()) {
+        for entry in arr {
+            let routing = AccountRouting::from_str(required_string(entry, "routing")?)
+                .context("tracked_ext_out_messages routing")?;
+            let mh = entry
+                .get("message_hashes")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::format_err!("message_hashes is not an array"))?;
+            let mut hashes = Vec::with_capacity(mh.len());
+            for h in mh {
+                let h = h
+                    .as_str()
+                    .ok_or_else(|| anyhow::format_err!("message hash is not a string"))?;
+                hashes.push(decode_hash32(h).context("tracked message hash")?);
+            }
+            tracked_ext_out_messages.insert(routing, hashes);
+        }
+    }
+
+    // history_proofs -> BTreeMap<u8, [u8;32]>
+    let mut history_proofs: BTreeMap<LayerNumber, [u8; 32]> = BTreeMap::new();
+    if let Some(arr) = value.get("history_proofs").and_then(|v| v.as_array()) {
+        for entry in arr {
+            let layer = parse_u64_field(entry, "layer")?;
+            anyhow::ensure!(layer <= u8::MAX as u64, "history proof layer out of range");
+            let root_hash =
+                decode_hash32(required_string(entry, "root_hash")?).context("history proof root_hash")?;
+            history_proofs.insert(layer as u8, root_hash);
+        }
+    }
+
+    // block_merkle_tree_leaves -> Option<[[u8;32]; 8]>
+    let block_merkle_tree_leaves = match value.get("block_merkle_tree_leaves") {
+        Some(serde_json::Value::Array(items)) => {
+            anyhow::ensure!(items.len() == 8, "block_merkle_tree_leaves must have 8 entries");
+            let mut out = [[0u8; 32]; 8];
+            for (i, item) in items.iter().enumerate() {
+                let s = item.as_str().ok_or_else(|| {
+                    anyhow::format_err!("block_merkle_tree_leaves[{i}] is not a string")
+                })?;
+                out[i] = decode_hash32(s).with_context(|| format!("block_merkle_tree_leaves[{i}]"))?;
+            }
+            Some(out)
+        }
+        _ => None,
+    };
+
+    Ok(GqlProofBlock {
+        id,
+        block_id,
+        thread_id,
+        height,
+        envelope_hash,
+        tracked_ext_out_messages_root,
+        tracked_ext_out_messages,
+        history_proofs,
+        block_merkle_tree_leaves,
+    })
+}
+
+fn required_string<'a>(v: &'a serde_json::Value, field: &str) -> anyhow::Result<&'a str> {
+    v.get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::format_err!("missing or non-string field `{field}`"))
+}
+
+fn parse_u64_field(v: &serde_json::Value, field: &str) -> anyhow::Result<u64> {
+    let val = v.get(field).ok_or_else(|| anyhow::format_err!("missing field `{field}`"))?;
+    if let Some(n) = val.as_u64() {
+        return Ok(n);
+    }
+    if let Some(n) = val.as_i64() {
+        return u64::try_from(n).with_context(|| format!("{field} is negative"));
+    }
+    if let Some(n) = val.as_f64() {
+        anyhow::ensure!(n.is_finite() && n >= 0.0 && n.fract() == 0.0, "{field} not an integer");
+        return Ok(n as u64);
+    }
+    anyhow::bail!("{field} is not a number")
+}
+
+fn decode_hash32(s: &str) -> anyhow::Result<[u8; 32]> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(s).map_err(|e| anyhow::format_err!("invalid hex: {e}"))?;
+    anyhow::ensure!(bytes.len() == 32, "expected 32 bytes, got {}", bytes.len());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
 }

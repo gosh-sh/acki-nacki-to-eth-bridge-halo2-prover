@@ -28,7 +28,6 @@ path = "src/main.rs"
 [dependencies]
 bridge-prover-lib = { workspace = true }
 bridge-event-private-witness-export = { path = "../bridge-event-private-witness-export" }
-node-block-client = { workspace = true }
 gosh-dense-balanced-tree = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

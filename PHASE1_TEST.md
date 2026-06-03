@@ -12,7 +12,7 @@ Proof correctness is covered by the integration tests in
 - **Single-thread testbed** (`poseidon_dex` / `test_bridge_poseidon_dex`):
   `block_height == seq_no` by construction. Multi-thread divergence is a
   later phase.
-- **W = 8**, pinned via `node-block-client::history_proof::HISTORY_PROOF_WINDOW_SIZE`.
+- **W = 8**, pinned via `bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE`.
   First key block at `seq_no = 8`, L1→L2 transition at `seq_no = 64`.
 - **README.md is stale** (still references removed `MAX_KEY_BLOCKS_TO_PROCESS`
   / v1 flat state); this file is the current behavior.

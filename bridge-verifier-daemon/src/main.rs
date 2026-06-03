@@ -39,9 +39,9 @@ const ENV_GQL_ENDPOINT: &str = "BRIDGE_GQL_ENDPOINT";
 const BK_SET_CONFIG: &str = "./bk_set.json";
 
 // History window size — must match the prover daemon and the node. Sourced
-// from node-block-client so it can never drift.
+// from the vendored poseidon_dense constant so it can never drift.
 const HISTORY_WINDOW_SIZE: usize =
-    node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE;
+    bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE;
 
 #[derive(Default)]
 struct Stats {

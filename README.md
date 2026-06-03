@@ -96,7 +96,7 @@ acki-nacki-to-eth-bridge-halo2-prover/
 └── .cargo/config.toml                     # --cfg tokio_unstable (required, do not remove)
 ```
 
-`HISTORY_WINDOW_SIZE` is driven by the `node-block-client` git dependency's `HISTORY_PROOF_WINDOW_SIZE` (currently `128`) — node and prover therefore cannot disagree on `W` at the constant level. `THINNING_FACTOR_P` (currently `4`) lives in `bridge-prover-lib/src/lib.rs`.
+`HISTORY_WINDOW_SIZE` is driven by `bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE` (currently `128`) — node and prover therefore cannot disagree on `W` at the constant level. `THINNING_FACTOR_P` (currently `4`) lives in `bridge-prover-lib/src/lib.rs`.
 
 ---
 
@@ -424,4 +424,3 @@ cargo test -p bridge-event-prover-lib --test event_prover       -- --nocapture  
 | Orchestrator hits `VERIFIER_STATE_TIMEOUT_S` | Confirm prover is producing bundles (`logs/prover_output.log` should show `=== Processing key block at height ===` every ~3 min). |
 | `non-monotone height` in verifier log | Cluster was restarted (chain reset) without wiping prover/verifier `state/`. Wipe both, re-bootstrap. |
 | `spawned_tasks_count not found` / tokio errors | `--cfg tokio_unstable` missing. Restore `.cargo/config.toml`. |
-| Cargo workspace conflict on `node-block-client` | Don't place this repo inside `acki-nacki/`. Keep them as siblings. |

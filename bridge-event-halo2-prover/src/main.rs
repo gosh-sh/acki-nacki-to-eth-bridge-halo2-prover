@@ -72,6 +72,7 @@ impl CliArgs {
                     let v = args.next().context("--out-dir needs a path")?;
                     out_dir = Some(PathBuf::from(v));
                 }
+                
                 "--seq-no" => {
                     let v = args.next().context("--seq-no needs a u32")?;
                     seq_no = Some(v.parse::<u32>().context("--seq-no must be a u32")?);

@@ -239,7 +239,7 @@ impl KeyManager {
         const REF_NUM_LAYERS: usize = 3;
         const REF_NUM_PREV_CHAIN_STEPS: usize = 2;
         const REF_TREE_DEPTH: usize =
-            (node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE + 2)
+            (crate::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE + 2)
                 .next_power_of_two()
                 .trailing_zeros() as usize;
         let chain_data = bridge_test_data_gen::layer_hashes::generate_layer_hash_chain_with_depth(

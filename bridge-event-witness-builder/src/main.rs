@@ -67,7 +67,7 @@ use tracing::{error, info, warn};
 
 use bridge_prover_lib::bridge_state::BridgeState;
 use bridge_prover_lib::chain_proof_builder::{
-    build_tree_and_proof, compute_block_leaf_hash, pad_leaves_to_power_of_2,
+    build_tree_and_proof, pad_leaves_to_power_of_2,
 };
 use bridge_prover_lib::gql_client::{self, GqlClient};
 
@@ -80,7 +80,7 @@ use gosh_dense_balanced_tree::{DenseChainLink, MAX_CHAIN_LEN};
 // Pull the same canonical constants the rest of the daemon stack uses, so
 // the witness builder cannot drift from the verifier.
 const HISTORY_WINDOW_SIZE: u64 =
-    node_block_client::history_proof::HISTORY_PROOF_WINDOW_SIZE as u64;
+    bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE as u64;
 
 /// Prover-side thinning factor `P`. Re-exported from `bridge_prover_lib`
 /// so the witness builder uses the same value as the prover daemon.
@@ -490,24 +490,19 @@ async fn build_events_tree_proof(
     acc: &[u8; 32],
     event_repr_hash: &[u8; 32],
 ) -> Result<MerkleProofData> {
-    use node_block_client::history_proof::{
+    use bridge_prover_lib::poseidon_dense::{
         compute_ext_message_leaf_hash, dense_merkle_proof, PoseidonHasher,
     };
-    use node_block_client::BLSSignedEnvelope;
 
-    let envelope = gql
-        .query_block_envelope(event_seq)
+    let block = gql
+        .query_proof_block_by_seqno(event_seq)
         .await
-        .with_context(|| format!("fetching envelope for event block seq={event_seq}"))?;
+        .with_context(|| format!("fetching proof block for event block seq={event_seq}"))?;
 
-    let cs = envelope.data().common_section();
-    let tracked = cs.tracked_ext_out_messages();
-
-    // Same iteration order the node uses to derive `ext_out_messages_root`:
-    // outer = `tracked_ext_out_messages` map, inner = each account's
-    // messages vector.
+    // Same iteration order the node uses to derive ext_out_messages_root:
+    // outer = tracked_ext_out_messages BTreeMap, inner = each account's vec.
     let mut leaves: Vec<[u8; 32]> = Vec::new();
-    for (account_routing, messages) in tracked.iter() {
+    for (account_routing, messages) in block.tracked_ext_out_messages.iter() {
         let (route_dapp, route_acc) = account_routing.unpack_for_hash();
         for msg in messages {
             leaves.push(compute_ext_message_leaf_hash(&route_dapp, &route_acc, msg));
@@ -523,9 +518,7 @@ async fn build_events_tree_proof(
     let target_leaf = compute_ext_message_leaf_hash(dapp, acc, event_repr_hash);
     let position = leaves.iter().position(|l| *l == target_leaf).ok_or_else(|| {
         anyhow::anyhow!(
-            "target event leaf {} not found in block seq={}'s tracked_ext_out_messages \
-             (block_context.account_dapp_id / account_id mismatch, \
-             or wrong event_message_hash_hex)",
+            "target event leaf {} not found in block seq={}'s tracked_ext_out_messages",
             hex::encode(target_leaf),
             event_seq,
         )
@@ -548,8 +541,10 @@ async fn build_events_tree_proof(
 /// Tree shape (matches `bridge-prover-lib::real_chain_builder::build_layer1_tree`):
 /// ```text
 /// leaves = [
-///     higher_layer_root,       // L2 root from same key block (or zero)
-///     prev_same_layer_root,    // L1 root from previous key block (or zero)
+///     higher_layer_root,       // L2 root from the most recent L2 key block
+///                              //   (multiples of W*W) ≤ key_block_seq — zero
+///                              //   only before the first L2 boundary
+///     prev_same_layer_root,    // L1 root from previous L1 key block (or zero)
 ///     block_leaf_0,
 ///     ...,
 ///     block_leaf_{W-1},
@@ -562,44 +557,37 @@ async fn build_block_tree_proof(
     w: u64,
     block_offset_in_window: u64,
 ) -> Result<(MerkleProofData, [u8; 32])> {
-    use node_block_client::BLSSignedEnvelope;
+    // higher_layer_root (L2): the most recent L2 root from the most recent
+    // L2 key block ≤ this key block — NOT necessarily this key block's own
+    // history_proofs[2] (which is zero unless this key block is L2-aligned).
+    // Mirrors `bridge_prover_lib::real_chain_builder::build_layer1_tree`.
+    let l2_step = w * w;
+    let most_recent_l2_block = (key_block_seq / l2_step) * l2_step;
+    let higher_layer_root: [u8; 32] = if most_recent_l2_block == 0 {
+        [0u8; 32]
+    } else {
+        match gql.query_proof_block_by_seqno(most_recent_l2_block).await {
+            Ok(b) => b.history_proofs.get(&2u8).copied().unwrap_or([0u8; 32]),
+            Err(e) => {
+                warn!(
+                    "failed to fetch L2 root from most-recent-L2 key block {}: {} — using zero",
+                    most_recent_l2_block, e
+                );
+                [0u8; 32]
+            }
+        }
+    };
 
-    // --- higher_layer_root (L2 from same key block, if present) ------------
-    // For the L1 tree the higher layer is L2. Fetch this key block's
-    // envelope and look up history_proofs[2]. If absent (no L2 yet), use
-    // zero — that matches the node's behaviour for blocks below the L2
-    // threshold.
-    let key_envelope = gql
-        .query_block_envelope(key_block_seq)
-        .await
-        .with_context(|| format!("fetching envelope for key block seq={key_block_seq}"))?;
-    let key_cs = key_envelope.data().common_section();
-    let higher_layer_root: [u8; 32] = key_cs
-        .history_proofs()
-        .get(&2u8)
-        .map(|p| *p.root_hash())
-        .unwrap_or([0u8; 32]);
-
-    // --- prev_same_layer_root (L1 root from previous key block) -----------
-    // TODO: For the very first L1 key block this is zero. Otherwise it's
-    // the L1 root from key_block_seq - W. We fetch it from that block's
-    // history_proofs[1] when it exists.
+    // prev_same_layer_root (L1 root from previous key block)
     let prev_key_block_seq = key_block_seq.saturating_sub(w);
     let prev_same_layer_root: [u8; 32] = if prev_key_block_seq == 0 {
         [0u8; 32]
     } else {
-        match gql.query_block_envelope(prev_key_block_seq).await {
-            Ok(env) => env
-                .data()
-                .common_section()
-                .history_proofs()
-                .get(&1u8)
-                .map(|p| *p.root_hash())
-                .unwrap_or([0u8; 32]),
+        match gql.query_proof_block_by_seqno(prev_key_block_seq).await {
+            Ok(b) => b.history_proofs.get(&1u8).copied().unwrap_or([0u8; 32]),
             Err(e) => {
                 warn!(
-                    "failed to fetch previous L1 root from key block {}: {} \
-                     — using zero; block_tree_proof root will likely not match verifier",
+                    "failed to fetch previous L1 root from key block {}: {} — using zero",
                     prev_key_block_seq, e
                 );
                 [0u8; 32]
@@ -607,49 +595,36 @@ async fn build_block_tree_proof(
         }
     };
 
-    // --- block leaves for the W blocks in [key_block_seq - W, key_block_seq) -
+    // block leaves for the W blocks in [key_block_seq - W, key_block_seq)
     let window_start = key_block_seq - w;
     let mut block_leaves = Vec::with_capacity(w as usize);
     for seq in window_start..key_block_seq {
-        let env = gql
-            .query_block_envelope(seq)
+        let b = gql
+            .query_proof_block_by_seqno(seq)
             .await
-            .with_context(|| format!("fetching envelope for block seq={seq} in L1 window"))?;
-        let block_id = env.data().identifier();
-        let env_hash = node_block_client::envelope_hash(&env);
-        let ext_out_root = *env.data().common_section().tracked_ext_out_messages_root();
-        let leaf = compute_block_leaf_hash(block_id.as_array(), &env_hash.0, &ext_out_root);
-        block_leaves.push(leaf);
+            .with_context(|| format!("fetching block seq={seq} in L1 window"))?;
+        block_leaves.push(b.block_leaf_hash());
     }
 
-    // --- assemble + pad ---------------------------------------------------
     let mut leaves = Vec::with_capacity(2 + block_leaves.len() + 2);
     leaves.push(higher_layer_root);
     leaves.push(prev_same_layer_root);
     leaves.extend_from_slice(&block_leaves);
     pad_leaves_to_power_of_2(&mut leaves);
 
-    // Block at offset i within the window sits at position 2 + i in the
-    // pre-pad leaf list. Padding only adds trailing zero leaves, so the
-    // position carries over unchanged.
     let leaf_position = (2 + block_offset_in_window) as usize;
     if leaf_position >= leaves.len() {
         bail!(
             "internal: leaf_position {} >= leaves.len() {} (W={}, offset={})",
-            leaf_position,
-            leaves.len(),
-            w,
-            block_offset_in_window,
+            leaf_position, leaves.len(), w, block_offset_in_window,
         );
     }
 
     let (root, siblings) = build_tree_and_proof(&leaves, leaf_position);
-
-    let proof = MerkleProofData {
+    Ok((MerkleProofData {
         position: leaf_position as u32,
         siblings_hex: siblings.iter().map(hex::encode).collect(),
-    };
-    Ok((proof, root))
+    }, root))
 }
 
 /// Resolve a block's `observed_height` (= `common_section.block_height.height()`).
@@ -657,8 +632,6 @@ async fn build_block_tree_proof(
 /// The verifier stores this value (not seq_no) in `state.heights[]`, so the
 /// witness builder needs it to look up the right slot.
 async fn fetch_block_observed_height(gql: &GqlClient, seq: u64) -> Result<u64> {
-    use node_block_client::BLSSignedEnvelope;
-    let env = gql.query_block_envelope(seq).await?;
-    let height = *env.data().common_section().block_height().height();
-    Ok(height)
+    let block = gql.query_proof_block_by_seqno(seq).await?;
+    Ok(block.height)
 }

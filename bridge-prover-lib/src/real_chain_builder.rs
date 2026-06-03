@@ -18,7 +18,7 @@ use tracing::info;
 
 use crate::bridge_state::BridgeState;
 use crate::chain_proof_builder::{
-    self, build_chain_proofs, compute_block_leaf_hash, pad_leaves_to_power_of_2, LayerTreeData,
+    self, build_chain_proofs, pad_leaves_to_power_of_2, LayerTreeData,
 };
 use crate::gql_client::GqlClient;
 
@@ -412,48 +412,18 @@ pub async fn fetch_layer_root_pub(gql: &GqlClient, seqno: u64, layer: u8) -> any
     fetch_layer_root(gql, seqno, layer).await
 }
 
-/// Fetch a specific layer's root hash from a block's history_proofs.
-/// Uses `boc` field deserialization (no `data` field needed).
+/// Fetch a specific layer's root hash from a block's history_proofs via GQL.
 async fn fetch_layer_root(gql: &GqlClient, seqno: u64, layer: u8) -> anyhow::Result<[u8; 32]> {
-    use node_block_client::BLSSignedEnvelope;
-    let envelope = gql.query_block_envelope(seqno).await?;
-    let history_proofs = envelope.data().common_section().history_proofs();
-    let proof = history_proofs
+    let block = gql.query_proof_block_by_seqno(seqno).await?;
+    block
+        .history_proofs
         .get(&layer)
-        .ok_or_else(|| anyhow::format_err!("block {} has no layer {} in history_proofs", seqno, layer))?;
-    Ok(*proof.root_hash())
+        .copied()
+        .ok_or_else(|| anyhow::format_err!("block {} has no layer {} in history_proofs", seqno, layer))
 }
 
-/// Fetch a block's BOC from GraphQL, deserialize as Envelope<AckiNackiBlock>,
-/// and compute the block leaf hash using the exact same values the node uses.
-///
-/// This mirrors the approach in `dex_data_exporter` and `dark_dex_halo2_private_witness_export_lib`:
-/// the `boc` field = bincode(Envelope<AckiNackiBlock>).
+/// Fetch a block's leaf hash directly from GQL (block_id, envelope_hash, ext_out_root).
 async fn fetch_block_leaf_hash_from_boc(gql: &GqlClient, seqno: u64) -> anyhow::Result<[u8; 32]> {
-    let tid = "00000000000000000000000000000000000000000000000000000000000000000000";
-    let q = format!(
-        r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seqno}) {{ boc }} }} }}"#
-    );
-    let resp = gql.query(&q).await?;
-    let boc_str = resp
-        .pointer("/blockchain/blockByHeight/boc")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::format_err!("no boc for block at seq={}", seqno))?;
-
-    use base64::Engine;
-    let boc_bytes = base64::engine::general_purpose::STANDARD
-        .decode(boc_str)
-        .context("failed to base64-decode boc")?;
-
-    // Deserialize as Envelope<AckiNackiBlock> — same as dex_data_exporter does.
-    use node_block_client::BLSSignedEnvelope;
-    let envelope: node_block_client::Envelope<node_block_client::AckiNackiBlock> =
-        bincode::deserialize(&boc_bytes)
-            .with_context(|| format!("failed to deserialize Envelope<AckiNackiBlock> from boc for block {}", seqno))?;
-
-    let block_id = envelope.data().identifier();
-    let env_hash = node_block_client::envelope_hash(&envelope);
-    let ext_out_root = *envelope.data().common_section().tracked_ext_out_messages_root();
-
-    Ok(compute_block_leaf_hash(block_id.as_array(), &env_hash.0, &ext_out_root))
+    let block = gql.query_proof_block_by_seqno(seqno).await?;
+    Ok(block.block_leaf_hash())
 }
