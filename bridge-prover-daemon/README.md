@@ -50,6 +50,33 @@ the layer hierarchy. The verifier daemon keeps the full mirror in
 `state/verifier_state.json`; the Ethereum contract will hold the same
 shape, just on a thinned cadence.
 
+![Layer hashes movement — chain-length cases and inclusion proofs at varying bridge maturity](docs/layer-hashes-movement.png)
+
+The diagram above sketches the three primitives Circuit 2 uses to keep
+the bridge mirror in sync with `GlobalHistoryData`. **Top strip:** the
+layer hierarchy (Level 1 / Level 2 / L_3) over consecutive blocks.
+**Left column — layer-hash movement cases**, the three regimes the
+prover must handle when a new key block arrives:
+
+- **Case A** — chain length in the bridge and in the incoming key block
+  are equal; replace `L_T_prev` with `L_T_new` via a single layer-`T`
+  path of length up to 10.
+- **Case B** — the bridge is *behind* (its top layer is lower than the
+  one the new key block carries); extend by climbing one or more layers
+  in the same proof chain.
+- **Case C** — the bridge is *ahead* (already has a higher top layer
+  than the new key block); the convergence target sits inside an
+  already-mirrored higher window, so the chain is shorter on the
+  bridge side and `L_{T-1}_new` is required to converge into
+  `L_{T-1}_prev + 1`.
+
+**Right column — anonymous block-inclusion proofs** the same primitives
+power for event proving (Circuit 4): at each bridge-maturity level
+(`L_2` not built / `L_2` built / `L_3` built / …) we can prove any
+user's block/event up to the corresponding reach (`128 ≈ 10²`,
+`128·128·9 ≈ 10⁵`, …). Same chain primitives, different starting
+position.
+
 ### What each daemon does
 
 - **bridge-prover-daemon** — Polls GraphQL for new key blocks. For
