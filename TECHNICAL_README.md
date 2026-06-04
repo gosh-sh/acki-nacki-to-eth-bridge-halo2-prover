@@ -149,14 +149,17 @@ After first init the seed file is the single source of truth — the verifier do
 
 ```bash
 cd /path/to/acki-nacki                   # checked out to branch `poseidon_dex`
+cargo clean && cargo update              # force rebuild — node code or tvm-sdk dep may have changed
+make generate_zerostate                  # first time only
+docker builder prune -af                 # purge stale Docker caches before rebuild
 make run                                  # kill + build_node + run_silent
-docker ps                                 # expect node{0..4}, q_server0, block_manager, nginx0, aerospike
+docker ps                                 # expect node{0..4}, q_server0, block_manager, nginx0, aerospike — all healthy
 curl -s -X POST -H 'Content-Type: application/json' \
      -d '{"query":"{ blockchain { blocks(last: 1) { edges { node { seq_no } } } } }"}' \
      http://localhost/graphql            # should return a seq_no
 ```
 
-First-ever build: 10–20 min. Incremental: seconds-to-minutes via Docker cache.
+First-ever build: 10–20 min. Incremental: seconds-to-minutes via Docker cache. Skip `cargo clean`/cache purge only if you're sure neither the node nor `tvm-sdk` has changed since last `make run`.
 
 ### Step 2 — Sync `bk_set.json` to the cluster's BLS keys
 
