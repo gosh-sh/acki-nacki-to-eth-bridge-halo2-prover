@@ -6,10 +6,11 @@
 # regenerate), then launches both daemons in the background writing to
 # logs/{prover,verifier}_output.log. Prints PIDs and how to stop.
 #
-# Why this isn't baked into the daemons themselves: PHASE1_TEST.md criterion I
-# (restart-resume) requires a daemon restart WITHOUT wiping state. The launcher
-# is a separate concern from daemon startup logic. For restart-resume testing,
-# launch the daemons manually via the `cargo run` commands in PHASE1_TEST.md.
+# Why this isn't baked into the daemons themselves: restart-resume testing
+# requires a daemon restart WITHOUT wiping state. The launcher is a separate
+# concern from daemon startup logic. For restart-resume testing, launch the
+# daemons manually with `cargo run --release --bin bridge-prover-daemon` /
+# `--bin bridge-verifier-daemon`.
 #
 # Usage:
 #   scripts/run-bridge-test.sh         # fresh start, default RUST_LOG=info

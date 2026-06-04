@@ -95,7 +95,6 @@ acki-nacki-to-eth-bridge-halo2-prover/
 ├── bk_set.json.poseidon_dex_local.bak     # snapshot for the acki-nacki `poseidon_dex` branch
 ├── scripts/run-bridge-test.sh             # launcher (wipes state, builds, starts both daemons)
 ├── scripts/stop-bridge-test.sh
-├── PHASE1_TEST.md                         # restart-resume / schema-v2 regression runbook
 ├── params/   state/   proofs/   logs/     # gitignored; created on demand
 └── .cargo/config.toml                     # --cfg tokio_unstable (required, do not remove)
 ```

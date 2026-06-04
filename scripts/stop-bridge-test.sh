@@ -2,11 +2,10 @@
 #
 # Graceful-shutdown companion to run-bridge-test.sh.
 #
-# Sends SIGINT to prover first, then verifier (matches the PHASE1_TEST.md
-# procedure: stopping the prover first means it won't write a half-finished
-# proof file the verifier would race on). Waits up to 30s for clean exit
-# (daemons print a SUMMARY block on SIGINT), then SIGKILLs anything still
-# alive.
+# Sends SIGINT to prover first, then verifier — stopping the prover first
+# means it won't write a half-finished proof file the verifier would race on.
+# Waits up to 30s for clean exit (daemons print a SUMMARY block on SIGINT),
+# then SIGKILLs anything still alive.
 
 set -euo pipefail
 
