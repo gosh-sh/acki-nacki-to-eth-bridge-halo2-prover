@@ -34,10 +34,11 @@ ext_out_messages_root)` — appended every finalized block. Layer
 window — appended only at heights where `h % W^L == 0`. Each layer's
 window is overwritten in place; only the last `W` hashes per layer
 remain. Top-layer reach: `W^{MAX_LAYERS+1} = 128^{11} ≈ 9·10^{23}`
-blocks. **The "bridge state" is precisely a small mirror of these
-layer windows.** The Ethereum contract will eventually hold the
-top-layer slice; today the verifier daemon holds the whole mirror in
-`state/verifier_state.json`.
+blocks. **The "bridge state" is precisely a mirror of these layer
+windows** — small in absolute size but spanning the whole chain
+through the layer hierarchy. The verifier daemon keeps the full
+mirror in `state/verifier_state.json`; the Ethereum contract will
+hold the same shape, just on a thinned cadence.
 
 ### What each daemon does
 
