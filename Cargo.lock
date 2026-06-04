@@ -702,8 +702,8 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber 0.3.23",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
 ]
 
 [[package]]
@@ -798,7 +798,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
 ]
 
 [[package]]
@@ -4334,7 +4334,7 @@ dependencies = [
 [[package]]
 name = "tvm_abi"
 version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4344,8 +4344,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
 ]
 
 [[package]]
@@ -4370,7 +4370,7 @@ dependencies = [
 [[package]]
 name = "tvm_block"
 version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
 dependencies = [
  "anyhow",
  "base64",
@@ -4383,7 +4383,7 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
 ]
 
 [[package]]
@@ -4439,7 +4439,7 @@ dependencies = [
 [[package]]
 name = "tvm_types"
 version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
 dependencies = [
  "aes",
  "anyhow",
@@ -4559,7 +4559,7 @@ dependencies = [
 [[package]]
 name = "tvm_vm"
 version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -4609,8 +4609,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tvm_abi 2.24.21",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
  "typenum",
  "zstd",
 ]

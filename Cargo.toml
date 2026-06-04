@@ -27,15 +27,13 @@ gosh-dense-balanced-tree = { git = "https://github.com/gosh-sh/gosh-halo2-crypto
 gosh-sha256-chip = { git = "https://github.com/gosh-sh/gosh-halo2-crypto-lib", branch = "main" }
 gosh-zk-snark-halo2-utils = { git = "https://github.com/gosh-sh/gosh-zk-snark-halo2-utils", branch = "main" }
 pse-poseidon = { git = "https://github.com/axiom-crypto/pse-poseidon.git" }
-# Pinned to the same SHA acki-nacki's Cargo.lock points at on branch
-# `full_dex_and_bridge_test_with_final_halo2_circuit`. Linear successor of
-# the previous tag `v2.25.2-rc.an` (09b571c69); the 4 intervening commits
-# only touch tvm_vm's ZK opcode handlers / test fixtures and do not
-# modify the surface the prover consumes (tvm_block, tvm_types, and
-# tvm_vm::executor::zk_stuff::bn254::poseidon).
-tvm_vm = { git = "https://github.com/tvmlabs/tvm-sdk.git", rev = "6edd3279e2ec3662cf9242a1bed866b3df6cdd51", features = ["gosh"] }
-tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", rev = "6edd3279e2ec3662cf9242a1bed866b3df6cdd51" }
-tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", rev = "6edd3279e2ec3662cf9242a1bed866b3df6cdd51" }
+# Tracks the same branch acki-nacki uses
+# (`full_dex_and_bridge_test_with_final_halo2_circuit`). Cargo.lock pins the
+# exact SHA for reproducible builds; `cargo update -p tvm_vm` pulls the
+# latest branch HEAD.
+tvm_vm = { git = "https://github.com/tvmlabs/tvm-sdk.git", branch = "full_dex_and_bridge_test_with_final_halo2_circuit", features = ["gosh"] }
+tvm_block = { git = "https://github.com/tvmlabs/tvm-sdk.git", branch = "full_dex_and_bridge_test_with_final_halo2_circuit" }
+tvm_types = { git = "https://github.com/tvmlabs/tvm-sdk.git", branch = "full_dex_and_bridge_test_with_final_halo2_circuit" }
 
 # Async + networking
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
