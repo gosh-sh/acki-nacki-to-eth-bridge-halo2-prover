@@ -702,8 +702,8 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber 0.3.23",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
 ]
 
 [[package]]
@@ -726,8 +726,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tvm_block 2.24.21",
- "tvm_types 2.24.21",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk)",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk)",
 ]
 
 [[package]]
@@ -798,7 +798,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
 ]
 
 [[package]]
@@ -830,7 +830,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tracing",
- "tvm_vm 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
+ "tvm_vm 2.24.21",
 ]
 
 [[package]]
@@ -1312,7 +1312,7 @@ source = "git+https://github.com/gosh-sh/dense-balanced-tree#0b600eb17fbfe1ca369
 dependencies = [
  "hex",
  "monotree",
- "tvm_vm 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec)",
+ "tvm_vm 2.24.20",
 ]
 
 [[package]]
@@ -4317,7 +4317,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "tvm_abi"
 version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an#09b571c6992020a138645ab6c7fc77872f68c94d"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec#5fe37f8b68be2e3396df274053102f0b3be8ba23"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4327,14 +4327,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
+ "tvm_block 2.24.20",
+ "tvm_types 2.24.20",
 ]
 
 [[package]]
 name = "tvm_abi"
-version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec#5fe37f8b68be2e3396df274053102f0b3be8ba23"
+version = "2.24.21"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4344,27 +4344,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec)",
-]
-
-[[package]]
-name = "tvm_block"
-version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an#09b571c6992020a138645ab6c7fc77872f68c94d"
-dependencies = [
- "anyhow",
- "base64",
- "crc",
- "ed25519",
- "ed25519-dalek",
- "hex",
- "log",
- "num",
- "num-traits",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
 ]
 
 [[package]]
@@ -4383,7 +4364,26 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec)",
+ "tvm_types 2.24.20",
+]
+
+[[package]]
+name = "tvm_block"
+version = "2.24.21"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+dependencies = [
+ "anyhow",
+ "base64",
+ "crc",
+ "ed25519",
+ "ed25519-dalek",
+ "hex",
+ "log",
+ "num",
+ "num-traits",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
 ]
 
 [[package]]
@@ -4402,38 +4402,7 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 2.24.21",
-]
-
-[[package]]
-name = "tvm_types"
-version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an#09b571c6992020a138645ab6c7fc77872f68c94d"
-dependencies = [
- "aes",
- "anyhow",
- "base64",
- "blst",
- "crc",
- "ctr",
- "curve25519-dalek",
- "ed25519",
- "ed25519-dalek",
- "fastbloom",
- "hex",
- "lazy_static",
- "lockfree",
- "log",
- "num",
- "num-derive",
- "num-traits",
- "parking_lot",
- "rand 0.8.6",
- "serde",
- "sha2 0.10.9",
- "smallvec",
- "thiserror 2.0.18",
- "x25519-dalek",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk)",
 ]
 
 [[package]]
@@ -4470,7 +4439,7 @@ dependencies = [
 [[package]]
 name = "tvm_types"
 version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk#9fe59570de80d9fa8a3764edf1556e4faed040b6"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
 dependencies = [
  "aes",
  "anyhow",
@@ -4499,62 +4468,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "tvm_vm"
-version = "2.24.20"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an#09b571c6992020a138645ab6c7fc77872f68c94d"
+name = "tvm_types"
+version = "2.24.21"
+source = "git+https://github.com/tvmlabs/tvm-sdk#9fe59570de80d9fa8a3764edf1556e4faed040b6"
 dependencies = [
+ "aes",
  "anyhow",
- "ark-bls12-381",
- "ark-bn254",
- "ark-crypto-primitives",
- "ark-ec",
- "ark-ff",
- "ark-groth16",
- "ark-r1cs-std",
- "ark-relations",
- "ark-serialize",
- "ark-snark",
- "ark-std 0.4.0",
- "base64ct",
- "bls12_381",
- "byte-slice-cast",
- "chrono",
- "derive_more",
- "diffy",
+ "base64",
+ "blst",
+ "crc",
+ "ctr",
+ "curve25519-dalek",
  "ed25519",
  "ed25519-dalek",
- "fastcrypto",
- "ff",
- "gosh-zk-snark-halo2-utils",
- "halo2-base 0.4.0",
+ "fastbloom",
  "hex",
- "itertools 0.13.0",
  "lazy_static",
+ "lockfree",
  "log",
- "neptune",
  "num",
- "num-bigint 0.4.6",
+ "num-derive",
  "num-traits",
- "once_cell",
- "pse-poseidon",
+ "parking_lot",
  "rand 0.8.6",
- "rand_chacha 0.2.2",
- "regex",
- "reqwest 0.13.4",
- "schemars 0.8.22",
- "semver",
  "serde",
- "serde_derive",
- "serde_json",
- "similar",
+ "sha2 0.10.9",
+ "smallvec",
  "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tvm_abi 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?tag=v2.25.2-rc.an)",
- "typenum",
- "zstd",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -4608,9 +4549,68 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tvm_abi 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec)",
- "tvm_block 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec)",
- "tvm_types 2.24.20 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=feature%2Fcache-poseidon-spec)",
+ "tvm_abi 2.24.20",
+ "tvm_block 2.24.20",
+ "tvm_types 2.24.20",
+ "typenum",
+ "zstd",
+]
+
+[[package]]
+name = "tvm_vm"
+version = "2.24.21"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+dependencies = [
+ "anyhow",
+ "ark-bls12-381",
+ "ark-bn254",
+ "ark-crypto-primitives",
+ "ark-ec",
+ "ark-ff",
+ "ark-groth16",
+ "ark-r1cs-std",
+ "ark-relations",
+ "ark-serialize",
+ "ark-snark",
+ "ark-std 0.4.0",
+ "base64ct",
+ "bls12_381",
+ "byte-slice-cast",
+ "chrono",
+ "derive_more",
+ "diffy",
+ "ed25519",
+ "ed25519-dalek",
+ "fastcrypto",
+ "ff",
+ "gosh-zk-snark-halo2-utils",
+ "halo2-base 0.4.0",
+ "hex",
+ "itertools 0.13.0",
+ "lazy_static",
+ "log",
+ "neptune",
+ "num",
+ "num-bigint 0.4.6",
+ "num-traits",
+ "once_cell",
+ "pse-poseidon",
+ "rand 0.8.6",
+ "rand_chacha 0.2.2",
+ "regex",
+ "reqwest 0.13.4",
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "similar",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tvm_abi 2.24.21",
+ "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
+ "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?rev=6edd3279e2ec3662cf9242a1bed866b3df6cdd51)",
  "typenum",
  "zstd",
 ]
