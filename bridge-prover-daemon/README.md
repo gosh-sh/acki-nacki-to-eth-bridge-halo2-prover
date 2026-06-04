@@ -34,11 +34,21 @@ ext_out_messages_root)` — appended every finalized block. Layer
 window — appended only at heights where `h % W^L == 0`. Each layer's
 window is overwritten in place; only the last `W` hashes per layer
 remain. Top-layer reach: `W^{MAX_LAYERS+1} = 128^{11} ≈ 9·10^{23}`
-blocks. **The "bridge state" is precisely a mirror of these layer
-windows** — small in absolute size but spanning the whole chain
-through the layer hierarchy. The verifier daemon keeps the full
-mirror in `state/verifier_state.json`; the Ethereum contract will
-hold the same shape, just on a thinned cadence.
+blocks.
+
+A **key block** here is a finalized block whose height is a multiple of
+`W` — i.e. the block that *publishes* a new batch of layer roots in its
+`common_section.history_proofs` (layer-`L` roots ride on heights where
+`h % W^L == 0`, so a single key block can carry multiple layers at once).
+The bridge state advances only at key blocks: the daemons reconstruct
+`GlobalHistoryData` by **proving the contents of key blocks** —
+Circuit 1A pins the key block's `block_id` to the live BK set, Circuit 2
+opens its layer-historical-hash payload and walks them into the layer
+windows. **The "bridge state" is precisely that mirror of layer
+windows** — small in absolute size but spanning the whole chain through
+the layer hierarchy. The verifier daemon keeps the full mirror in
+`state/verifier_state.json`; the Ethereum contract will hold the same
+shape, just on a thinned cadence.
 
 ### What each daemon does
 
