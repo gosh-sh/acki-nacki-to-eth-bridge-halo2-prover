@@ -34,7 +34,7 @@ Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no
 - [Configuration (env vars)](#configuration-env-vars)
 - [Bootstrap behavior](#bootstrap-behavior)
 - [Runbook — local devnet (full E2E with Circuit 4)](#runbook--local-devnet-full-e2e-with-circuit-4)
-- [Runbook — shellnet (Circuits 1A + 2 only)](#runbook--shellnet-circuits-1a--2-only)
+- [Runbook — bundle-only (Circuits 1A + 2, local or shellnet)](#runbook--bundle-only-circuits-1a--2-local-or-shellnet)
 - [IPC, State, and On-disk Artifacts](#ipc-state-and-on-disk-artifacts)
 - [Performance](#performance)
 - [Integration Tests](#integration-tests)
@@ -245,36 +245,32 @@ cd /path/to/acki-nacki && make stop     # stops + removes docker volumes
 
 ---
 
-## Runbook — shellnet (Circuits 1A + 2 only)
+## Runbook — bundle-only (Circuits 1A + 2, local or shellnet)
 
-No multisig, no event proving — just observational bundle proving against the live shellnet. Same binaries as Step 4 above, different env vars.
+For exercising the bridge's state-update path (Circuits 1A + 2) without event catching — useful on either local devnet (skip the Step-5 orchestrator) or live shellnet. Same binaries as the full runbook; only `BRIDGE_GQL_ENDPOINT` differs.
 
-### Step 1 — Build binaries (if not already built)
+Pick the endpoint:
+
+| Target | `BRIDGE_GQL_ENDPOINT` |
+|---|---|
+| Local devnet | `http://localhost/graphql` (default — env var can be omitted) |
+| Shellnet | `https://shellnet.ackinacki.org/graphql` |
+
+### Step 1 — Build binaries
 
 ```bash
 cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
 cargo build --release --bin bridge-prover-daemon --bin bridge-verifier-daemon
 ```
 
-If Circuit 4 keys (`params/event_*.bin`) are absent, generate them too:
+The verifier loads all three VKs at startup, so Circuit 4 keys must exist on disk even when no event will be proven. If `params/event_*.bin` are absent:
 ```bash
 cargo run --release --bin bridge-event-halo2-prover -- --selftest
 ```
-(Verifier loads all three VKs at startup even when Circuit 4 will never fire on this network.)
 
-### Step 2 — Sync `bk_set.json` to shellnet's BLS keys
+### Step 2 — Sync `bk_set.json` (safety net)
 
-The verifier prefers GQL but falls back to this file. Pull shellnet's current 5 signers:
-
-```bash
-# Replace `0`/`1`/... with shellnet's actual signer indices (sparse — query GQL).
-# Quick check that the GQL endpoint is reachable:
-curl -s -X POST -H 'Content-Type: application/json' \
-     -d '{"query":"{ bkSetUpdates(last:1){edges{node{height nodeId}}}}"}' \
-     https://shellnet.ackinacki.org/graphql
-```
-
-In practice the GQL race wins on shellnet (the chain is always live), so `bk_set.json` only matters as a safety net. If unsure, copy the shellnet backup if you have one, or just let the daemon fetch over GQL — watch the startup log for `loaded BK set from GraphQL: N signers`.
+The verifier prefers GQL and falls back to this file only if the startup race loses. For local devnet, follow Step 2 of the full runbook (copy from `acki-nacki/config/block_keeper*_bls.keys.json`). For shellnet the chain is always live so the GQL fetch normally wins; watch startup log for `loaded BK set from GraphQL: N signers`.
 
 ### Step 3 — Wipe state, start both daemons
 
@@ -282,31 +278,27 @@ In practice the GQL race wins on shellnet (the chain is always live), so `bk_set
 cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
 rm -rf state/ proofs/ logs/ && mkdir -p logs
 
-BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql \
-    nohup ./target/release/bridge-verifier-daemon > logs/verifier.log 2>&1 &
+# Omit BRIDGE_GQL_ENDPOINT for local devnet; set it for shellnet.
+export BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql   # shellnet only
+
+nohup ./target/release/bridge-verifier-daemon > logs/verifier.log 2>&1 &
 echo "verifier_pid=$!" > logs/pids.txt
 
-BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql \
-    nohup ./target/release/bridge-prover-daemon > logs/prover.log 2>&1 &
+nohup ./target/release/bridge-prover-daemon > logs/prover.log 2>&1 &
 echo "prover_pid=$!" >> logs/pids.txt
 ```
 
-Optionally pin the seed for reproducibility:
-```bash
-BRIDGE_GQL_ENDPOINT=https://shellnet.ackinacki.org/graphql \
-BRIDGE_BOOTSTRAP_SEQNO=365056 \
-    ./target/release/bridge-prover-daemon ...
-```
+Optionally pin the seed for reproducibility via `BRIDGE_BOOTSTRAP_SEQNO=<N>` (must be `> 0` and `% (W·P) == 0`).
 
 ### Step 4 — Watch first bundle land
 
 ```bash
 tail -f logs/verifier.log logs/prover.log
-ls proofs/                              # proof_<seed+512>.json + result_<seed+512>.json
-cat proofs/result_<seed+512>.json       # { "primary_verified": true, "layer_verified": true, "error": null }
+ls proofs/                              # proof_<seed+W·P>.json + result_<seed+W·P>.json
+cat proofs/result_<seed+W·P>.json       # { "primary_verified": true, "layer_verified": true, "error": null }
 ```
 
-Expected wall-clock from prover start to first verified bundle: ~12 min (waiting for chain to cross seed + ~5 min Circuit 1A + ~3 min Circuit 2).
+Expected wall-clock from prover start to first verified bundle: ~12 min (wait for chain to cross seed + ~5 min Circuit 1A + ~3 min Circuit 2).
 
 ### Stop
 
