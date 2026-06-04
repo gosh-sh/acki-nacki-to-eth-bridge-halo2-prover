@@ -76,6 +76,12 @@ import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
+
+# Bundled `tvm-cli` lives under `python/bin/` — prepend to PATH so
+# `helper.common`'s `shutil.which("tvm-cli")` resolves it. Override with
+# `CLI_NAME` env var to point at a different binary.
+os.environ["PATH"] = os.path.join(_HERE, "bin") + os.pathsep + os.environ.get("PATH", "")
+
 from helper import common
 
 # ── Addresses ─────────────────────────────────────────────────────────────────

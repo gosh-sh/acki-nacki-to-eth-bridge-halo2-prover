@@ -12,3 +12,6 @@ logs/
 # every launch; never belongs in version control.
 state/
 .DS_Store
+# Python orchestrator runtime artefacts
+python/**/__pycache__/
+python/tvm-cli.conf.json

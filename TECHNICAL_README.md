@@ -35,6 +35,7 @@ Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no
 - [Bootstrap behavior](#bootstrap-behavior)
 - [BK set rotation](#bk-set-rotation)
 - [Runbook — local devnet (full E2E with Circuit 4)](#runbook--local-devnet-full-e2e-with-circuit-4)
+- [Runbook — full E2E via bundled `python/` orchestrator](#runbook--full-e2e-via-bundled-python-orchestrator)
 - [Runbook — bundle-only (Circuits 1A + 2, local or shellnet)](#runbook--bundle-only-circuits-1a--2-local-or-shellnet)
 - [IPC, State, and On-disk Artifacts](#ipc-state-and-on-disk-artifacts)
 - [Performance](#performance)
@@ -252,6 +253,52 @@ cat proofs/proof_event_000000.result.json
 scripts/stop-bridge-test.sh             # SIGINT both, SIGKILL after 30s if needed
 cd /path/to/acki-nacki && make stop     # stops + removes docker volumes
 ```
+
+---
+
+## Runbook — full E2E via bundled `python/` orchestrator
+
+Same flow as above, but with the orchestrator and all its Python-side
+dependencies bundled under [`python/`](./python) — no acki-nacki checkout needed
+to drive the event side. Useful when the node is already running somewhere
+(local devnet, shellnet, ops cluster) and the consumer only has this repo.
+
+**What's bundled**
+
+| Path | Purpose |
+|---|---|
+| `python/bin/tvm-cli` | Used to encode message bodies / read accounts. Picked up via `PATH` injection unless `CLI_NAME` is set. |
+| `python/contracts/{TokenBridge,UpdateCustodianMultisigWallet,GiverV3}.*` | ABIs / TVC / GiverV3 keys the orchestrator deploys & calls. |
+| `python/helper/common.py` | Verbatim `tests/helper/common.py` from acki-nacki — `tvm-cli` wrapper, GQL, deploy helpers. |
+| `python/generate_withdrawals_with_live_event_proving.py` | The orchestrator itself; all artefact paths are anchored to `__file__`, so CWD doesn't matter. |
+
+**Prerequisites beyond a running node**
+
+Same as Steps 1–4 of the local-devnet runbook with two adjustments:
+
+- The node still has to come from somewhere (e.g. acki-nacki `make run` for local devnet) — `python/` packaging only covers the orchestrator side.
+- A working `python3` (no extra packages — only stdlib is used).
+
+**Run**
+
+```bash
+cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
+# defaults: NETWORK=http://127.0.0.1:80, GRAPHQL_URL=http://localhost/graphql,
+#          PROVER_DIR=<this repo>, WORK_DIR=/tmp/bridge-e2e
+python3 python/generate_withdrawals_with_live_event_proving.py
+```
+
+Other targets (shellnet etc.) — set `NETWORK` + `GRAPHQL_URL`:
+
+```bash
+NETWORK=shellnet.ackinacki.org \
+GRAPHQL_URL=https://shellnet.ackinacki.org/graphql \
+python3 python/generate_withdrawals_with_live_event_proving.py
+```
+
+Override knobs (all optional): `CLI_NAME` (use a different `tvm-cli`), `PROVER_DIR` (release binaries + `state/` + `proofs/` location), `WORK_DIR` (scratch dir for `partial.json` / `witness.json` / generated multisig keypair).
+
+Phases printed are identical to Step 5 of the local-devnet runbook; exit code 0 only if the daemon's `result.json` shows `verified && anchor_matched && proof_valid`.
 
 ---
 
