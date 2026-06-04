@@ -29,6 +29,7 @@ Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no
 ## Table of Contents
 
 - [Architecture](#architecture)
+- [Binary roles & state ownership](#binary-roles--state-ownership)
 - [Repository Layout](#repository-layout)
 - [Prerequisites](#prerequisites)
 - [Configuration (env vars)](#configuration-env-vars)
@@ -77,6 +78,37 @@ Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no
 Both halves of the system are **file-based**: `proofs/proof_NNN.json` is the prover→verifier channel; `proofs/result_NNN.json` (or `proof_event_NNN.result.json` for Circuit 4) is the verifier→prover ACK. `state/verifier_state.json` is the off-chain twin of the Ethereum contract's `layerWindows` storage.
 
 **On-demand PK loading.** Each proving key is ~3 GB. The prover loads one circuit's PK, generates a proof, then unloads before loading the next — peak RSS stays around 14 GB instead of 22+.
+
+---
+
+## Binary roles & state ownership
+
+Five executables, two long-running daemons that own the state files, plus three one-shot CLIs the Python orchestrator chains per `WithdrawalInitiated` event.
+
+**Daemons (long-running, own `state/`):**
+
+| Binary | Role | Owns |
+|---|---|---|
+| `bridge-prover-daemon` | Polls the chain via GQL, generates Circuit 1A + 2 proofs per thinned key-block (W·P-block bundle). Writes `proofs/proof_NNN.json`. | `state/prover_state.json` — its mirror of the L1+ history windows and the next bundle to prove. |
+| `bridge-verifier-daemon` | Verifies every `proof_*.json` the prover drops, advances the layer-hash mirror, picks up `proof_event_*.json` and verifies Circuit 4. Writes `result_NNN.json` / `proof_event_*.result.json`. | `state/verifier_state.json` — off-chain twin of the Ethereum contract's `layerWindows`, i.e. the authoritative source for which layer hash anchors each key block. |
+
+**Event-side CLIs (one-shot, called per event):**
+
+| Binary | Reads | Writes | Touches daemon state / GQL? |
+|---|---|---|---|
+| `bridge-event-private-witness-export` | Event BOC + block context from CLI flags only. | `partial.json` (decoded `WithdrawalInitiated` + `ext_msg_leaf` ingredients). | **No.** Pure local decode — safe to run before the enclosing bundle is even proved. |
+| `bridge-event-witness-builder` | `partial.json`, **`state/verifier_state.json`** (for the anchor layer hash), GQL (for `tracked_ext_out_messages` and the L1 tree shape). | `witness.json` — the complete Circuit-4 `PrivateWitness` (`events_tree_proof`, `block_tree_proof`, `anchor`). | **Yes — the only one of the three.** Glue step between the live world and the prover. |
+| `bridge-event-halo2-prover` | `witness.json` + `./params/` (SRS + Circuit 4 PK/VK). | `proofs/proof_event_NNN.json` (self-verified before exit). | **No.** Pure cryptographic step — replayable offline against a frozen `witness.json`. |
+
+**Why three event binaries instead of one.** Each step has a different failure mode and a different dependency surface, so isolating them keeps the deterministic pieces deterministic:
+
+- Export (1) needs only raw block data → usable in hermetic unit tests.
+- Builder (2) is the only piece that has to talk to the live daemon + GQL → keep its blast radius small.
+- Prover (3) is CPU-bound and depends only on a frozen fixture → re-runnable without re-doing the network round-trips.
+
+Mirrors the dex-tooling convention (`acki-nacki/tests/dex/...`) of one Rust binary per artefact.
+
+**Per-event flow:** Python orchestrator → (1) `partial.json` → (2) `witness.json` (reads `verifier_state.json` + GQL) → (3) `proof_event_NNN.json` → `bridge-verifier-daemon` picks it up → `proof_event_NNN.result.json`.
 
 ---
 
