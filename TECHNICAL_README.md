@@ -33,6 +33,7 @@ Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no
 - [Prerequisites](#prerequisites)
 - [Configuration (env vars)](#configuration-env-vars)
 - [Bootstrap behavior](#bootstrap-behavior)
+- [BK set rotation](#bk-set-rotation)
 - [Runbook — local devnet (full E2E with Circuit 4)](#runbook--local-devnet-full-e2e-with-circuit-4)
 - [Runbook — bundle-only (Circuits 1A + 2, local or shellnet)](#runbook--bundle-only-circuits-1a--2-local-or-shellnet)
 - [IPC, State, and On-disk Artifacts](#ipc-state-and-on-disk-artifacts)
@@ -140,6 +141,16 @@ The prover writes `state/bootstrap_seed.json` once on first start and the verifi
 - **Explicit (`BRIDGE_BOOTSTRAP_SEQNO=N`)** — uses `N` directly. `N` must be `> 0` and `N % (W·P) == 0`. Use this for reproducibility, or to skip the auto-mode wait by pinning to a known-good seed already past chain head.
 
 After first init the seed file is the single source of truth — the verifier does not re-read it, and the prover does not re-pick. If you ever need to re-seed (e.g. switching networks), **wipe `state/` on both daemons together** — otherwise the verifier keeps its stale persisted state while the prover writes a fresh seed, and they silently diverge.
+
+---
+
+## BK set rotation
+
+The BK set is a **circuit witness**, not a circuit constant — only `MAX_SIGNERS = 300` (compile-time, `bridge-prover-lib/src/keys.rs`) shapes the keys. **Rotation does not require regenerating `primary_*.bin` / `layer_*.bin`** as long as the new set still fits ≤ `MAX_SIGNERS`.
+
+Both daemons fetch the set **once at startup** and cache it for the whole run — there is no `bkSetUpdates` subscription. If the on-chain set rotates mid-run, the prover will silently skip key blocks signed by indices it doesn't recognise (`signers [k] not in BK set, skipping`).
+
+On rotation: **stop both daemons, refresh `bk_set.json` if you rely on the GQL-failure fallback, restart both — do NOT wipe `state/`** (`stored_bk_set_commitment` is overwritten on the next bundle). The only case that needs `rm -rf state/` is a rotation that happens during the bootstrap key block itself, since `bootstrap_seed.json` would then encode the stale set.
 
 ---
 
