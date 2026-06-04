@@ -62,7 +62,7 @@ Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no
 │    (W·P blocks)     │                  │  • Verifies Circuit 4      │
 └─────────────────────┘                  └────────────────────────────┘
                            ▲                       ▲
-                           │ proof_event_NNN.json  │  (LOCAL DEVNET ONLY)
+                           │ proof_event_NNN.json  │
 ┌──────────────────────────┴────────────────┐      │
 │ Per WithdrawalInitiated event:            │      │
 │   bridge-event-private-witness-export ─►  │      │
@@ -82,6 +82,7 @@ Both halves of the system are **file-based**: `proofs/proof_NNN.json` is the pro
 
 ```
 acki-nacki-to-eth-bridge-halo2-prover/
+├── Cargo.toml  Cargo.lock                 # workspace root (7 members below)
 ├── bridge-prover-lib/                     # shared library
 ├── bridge-prover-daemon/                  # bin "bridge-prover"        (Circuits 1A + 2)
 ├── bridge-verifier-daemon/                # bin "bridge-verifier"      (all three circuits)
@@ -90,8 +91,10 @@ acki-nacki-to-eth-bridge-halo2-prover/
 ├── bridge-event-private-witness-export/   # bin: dump PartialPrivateWitness from a block
 ├── bridge-event-witness-builder/          # bin: enrich it via GQL + verifier state
 ├── bk_set.json                            # local BLS pubkeys fallback (see Troubleshooting)
+├── bk_set.json.poseidon_dex_local.bak     # snapshot for the acki-nacki `poseidon_dex` branch
 ├── scripts/run-bridge-test.sh             # launcher (wipes state, builds, starts both daemons)
 ├── scripts/stop-bridge-test.sh
+├── PHASE1_TEST.md                         # restart-resume / schema-v2 regression runbook
 ├── params/   state/   proofs/   logs/     # gitignored; created on demand
 └── .cargo/config.toml                     # --cfg tokio_unstable (required, do not remove)
 ```
