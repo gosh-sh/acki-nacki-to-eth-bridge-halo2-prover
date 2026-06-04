@@ -71,9 +71,19 @@ This produces three executables under `target/release/`. Build status:
 | `bridge-event-halo2-prover` | ✅ Yes | Generates the Halo2 proof. Done. |
 | `bridge-event-witness-builder` | ⚠️ **Not in final shape** | Today it builds a witness against the off-chain modelling verifier daemon. Will be rewritten to anchor against the live Ethereum bridge contract. The stub script will be updated to track that change. |
 
-### 4. Circuit 4 proving key (~3 GB)
+### 4. Circuit 4 proving + verifying key (~3 GB)
 
-The very first run of `bridge-event-halo2-prover` will auto-generate the proving and verifying keys under `params/`. This takes a few minutes and uses several GB of disk + RAM. Subsequent runs reuse the cached keys.
+The Circuit 4 keys live under `params/event_pk.bin` + `params/event_vk.bin`. They are **not downloaded** — you have to generate them locally, once. Subsequent runs reuse the cached files.
+
+Why up front: today the stub still calls `bridge-event-witness-builder`, which reads state written by `bridge-verifier-daemon`. The verifier daemon refuses to start unless `params/event_vk.bin` already exists. So generate the keys **before** you start the daemons:
+
+```bash
+cargo run --release --bin bridge-event-halo2-prover -- --selftest
+```
+
+Takes ~5 min and several GB of disk + RAM. On the same run it also creates `params/kzg_bn254_20.srs` (~128 MB), which is the trusted-setup SRS reused by all three circuits.
+
+Circuits 1A and 2 keys (`primary_*.bin`, `layer_*.bin`) are produced separately by `bridge-prover-daemon` on its first start — same as in the local-devnet runbook in [TECHNICAL_README.md § Step 3](./TECHNICAL_README.md#step-3--keys-first-run-only).
 
 ### 5. Python 3
 
