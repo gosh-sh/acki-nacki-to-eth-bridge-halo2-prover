@@ -45,12 +45,13 @@ hold the same shape, just on a thinned cadence.
 - **bridge-prover-daemon** — Polls GraphQL for new key blocks. For
   each one: fetches the BLS attestation, runs **Circuit 1A** (proves
   ≥⌈2n/3⌉ signatures from the current BK set, binds `block_id` to
-  `bk_set_poseidon`), then **Circuit 2** (opens the layer-0 preimage
-  in `block_id`'s Merkle tree and walks a chain of dense Poseidon
-  proofs across intermediate key blocks to advance the layer windows
-  consistently). Writes one `proofs/proof_<seq>.json` per processed
-  key block. Proving keys are loaded on demand, then unloaded — peak
-  RSS stays near the largest of the three PKs.
+  `bk_set_poseidon`), then **Circuit 2** (proves via a SHA-256 Merkle
+  path under `block_id` the three block fields whose Poseidon hash is
+  the layer-0 leaf, then walks a dense Poseidon chain across
+  intermediate key blocks to advance the layer windows consistently).
+  Writes one `proofs/proof_<seq>.json` per processed key block.
+  Proving keys are loaded on demand, then unloaded — peak RSS stays
+  near the largest of the three PKs.
 - **bridge-verifier-daemon** — Watches `proofs/`, KZG-verifies each
   proof against cached VKs, and on success applies the proof's layer
   transitions to its own `state/verifier_state.json` (the off-chain
