@@ -46,16 +46,16 @@ rm -f proofs/*.json state/*.json logs/*.log logs/test.pids
 mkdir -p proofs state logs
 
 echo "==> building daemons ($PROFILE profile)"
-cargo build "${CARGO_FLAGS[@]}" --bin bridge-prover --bin bridge-verifier
+cargo build "${CARGO_FLAGS[@]}" --bin bridge-prover-daemon --bin bridge-verifier-daemon
 
 PID_FILE="logs/test.pids"
 : > "$PID_FILE"
 
 # Launch verifier first — it watches proofs/ and we want it ready before the
 # prover writes the bootstrap seed.
-echo "==> launching bridge-verifier"
+echo "==> launching bridge-verifier-daemon"
 RUST_LOG="${RUST_LOG:-info}" \
-    "./target/$PROFILE_DIR/bridge-verifier" \
+    "./target/$PROFILE_DIR/bridge-verifier-daemon" \
     > logs/verifier_output.log 2>&1 &
 VERIFIER_PID=$!
 echo "verifier=$VERIFIER_PID" >> "$PID_FILE"
@@ -63,9 +63,9 @@ echo "verifier=$VERIFIER_PID" >> "$PID_FILE"
 # Tiny stagger so the verifier prints its banner first; not load-bearing.
 sleep 1
 
-echo "==> launching bridge-prover"
+echo "==> launching bridge-prover-daemon"
 RUST_LOG="${RUST_LOG:-info}" \
-    "./target/$PROFILE_DIR/bridge-prover" \
+    "./target/$PROFILE_DIR/bridge-prover-daemon" \
     > logs/prover_output.log 2>&1 &
 PROVER_PID=$!
 echo "prover=$PROVER_PID" >> "$PID_FILE"

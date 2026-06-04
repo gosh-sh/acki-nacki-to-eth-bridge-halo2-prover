@@ -54,7 +54,7 @@ scripts/stop-bridge-test.sh
 ```
 
 For criterion I (restart-resume): re-launch the daemons **without** wiping —
-use the `cargo run --release --bin bridge-verifier` / `bridge-prover`
+use the `cargo run --release --bin bridge-verifier-daemon` / `bridge-prover-daemon`
 commands directly, since `run-bridge-test.sh` always wipes.
 
 ## Pass criteria
@@ -128,7 +128,7 @@ scripts/stop-bridge-test.sh
 jq '.schema_version = 1' proofs/proof_000016.json > /tmp/v1.json \
   && mv /tmp/v1.json proofs/proof_000016.json
 rm proofs/result_000016.json
-RUST_LOG=info cargo run --release --bin bridge-verifier
+RUST_LOG=info cargo run --release --bin bridge-verifier-daemon
 ```
 Expect log: `proof file proofs/proof_000016.json has schema_version=1 but
 verifier expects 2`. Verifier writes `VerifyResult { error: Some(...) }`

@@ -31,8 +31,8 @@ send_int() {
 }
 
 # Order matters: prover first, then verifier.
-send_int "$PROVER_PID" "bridge-prover"
-send_int "$VERIFIER_PID" "bridge-verifier"
+send_int "$PROVER_PID" "bridge-prover-daemon"
+send_int "$VERIFIER_PID" "bridge-verifier-daemon"
 
 # Wait up to 30s for both to exit.
 for _ in $(seq 1 30); do
