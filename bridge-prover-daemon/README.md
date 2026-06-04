@@ -15,6 +15,81 @@ bundle path on either a local devnet or live shellnet. For full E2E
 
 ---
 
+## What this is for
+
+The Acki Nacki → Ethereum bridge needs the Ethereum-side contract to
+trust a compact summary of Acki Nacki's block history, so that later
+event proofs (e.g. `WithdrawalInitiated`) can be verified against it.
+The two daemons in this repo are the off-chain machinery that keeps
+that summary current.
+
+### Bridge state — `GlobalHistoryData`
+
+The node maintains, per thread and per layer `L ∈ {0..10}`, a
+fixed-size circular buffer of `W = 128` Poseidon hashes (see
+[`GLOBAL_HISTORY_DATA_SPEC.md`](https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits/blob/main/GLOBAL_HISTORY_DATA_SPEC.md)).
+Layer 0 holds per-block leaves `Poseidon(block_id ‖ envelope_hash ‖
+ext_out_messages_root)` — appended every finalized block. Layer
+`L ≥ 1` holds the Poseidon-Merkle root of the previous full layer-`L-1`
+window — appended only at heights where `h % W^L == 0`. Each layer's
+window is overwritten in place; only the last `W` hashes per layer
+remain. Top-layer reach: `W^{MAX_LAYERS+1} = 128^{11} ≈ 9·10^{23}`
+blocks. **The "bridge state" is precisely a small mirror of these
+layer windows.** The Ethereum contract will eventually hold the
+top-layer slice; today the verifier daemon holds the whole mirror in
+`state/verifier_state.json`.
+
+### What each daemon does
+
+- **bridge-prover-daemon** — Polls GraphQL for new key blocks. For
+  each one: fetches the BLS attestation, runs **Circuit 1A** (proves
+  ≥⌈2n/3⌉ signatures from the current BK set, binds `block_id` to
+  `bk_set_poseidon`), then **Circuit 2** (opens the layer-0 preimage
+  in `block_id`'s Merkle tree and walks a chain of dense Poseidon
+  proofs across intermediate key blocks to advance the layer windows
+  consistently). Writes one `proofs/proof_<seq>.json` per processed
+  key block. Proving keys are loaded on demand, then unloaded — peak
+  RSS stays near the largest of the three PKs.
+- **bridge-verifier-daemon** — Watches `proofs/`, KZG-verifies each
+  proof against cached VKs, and on success applies the proof's layer
+  transitions to its own `state/verifier_state.json` (the off-chain
+  twin of the contract storage). Writes `proofs/result_<seq>.json`
+  as the ACK.
+
+### Their interaction
+
+Both halves are **file-based** — no sockets, no shared memory. The
+on-disk channel is the IPC:
+
+```
+prover → proofs/proof_NNN.json  (1A proof + 2 proof + layer hashes)
+verifier ← reads, verifies, advances state
+verifier → proofs/result_NNN.json  (primary_verified, layer_verified, error)
+```
+
+State files on both sides mirror the same layer windows. Both daemons
+must agree on the **bootstrap seed** (`state/bootstrap_seed.json`,
+pinned at first start), and they must advance in lockstep — a state
+wipe must happen on both together, otherwise they diverge silently.
+
+### Thinning — why one bundle covers `W·P` source blocks
+
+At ~3 blk/s a key block lands every `W/3 ≈ 43 s`, but Circuit 1A alone
+takes ~5 min and its cost is invariant in `W`. Without help, the prover
+falls behind the chain by ~7×. **Thinning** is the fix: relay only
+*every P-th* key block (`P = 4` here), so each bundle covers `W·P =
+512` source blocks. The work skipped is absorbed by Circuit 2's
+dense-Poseidon proof chain — up to `MAX_CHAIN_LEN = 11` links, freely
+interleaving three primitives on the layer trees: *climb* (jump to a
+lower layer at the same window), *forward* (advance one full window at
+the current layer), and *descend* (drop to a higher layer). The producer's
+emission cadence is unchanged — thinning is purely a prover-side
+relay-rate change. See
+[`BRIDGE_PROVER_THINNING_SPEC.md`](https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits/blob/main/BRIDGE_PROVER_THINNING_SPEC.md)
+for the catalogue of chain shapes and slack analysis.
+
+---
+
 ## Prerequisites
 
 - **Rust nightly** (release builds).
