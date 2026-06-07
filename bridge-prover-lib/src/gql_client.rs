@@ -564,11 +564,12 @@ fn parse_proof_block(value: &serde_json::Value) -> anyhow::Result<GqlProofBlock>
     })
 }
 
-/// Decode GraphQL block fields into the bincode `Envelope<AckiNackiBlock>` bytes.
+/// Decode GraphQL block fields into bytes for attestation scanning.
 ///
-/// Legacy nodes expose a single base64 `boc`. Modern gql-server (poseidon_dex+)
-/// stores the envelope header in `aggregated_signature` + `signature_occurrences`
-/// and the payload in zstd-compressed (or raw) base64 `data`.
+/// Legacy nodes expose a single base64 `boc` (full bincode `Envelope<AckiNackiBlock>`).
+/// Modern gql-server stores `aggregated_signature` + `signature_occurrences` separately
+/// and puts only `bincode(AckiNackiBlock)` in zstd-compressed `data`. Attestations live
+/// inside that payload — concatenating the three DB blobs is not a valid envelope.
 fn decode_block_boc_fields(block: &Value) -> anyhow::Result<Vec<u8>> {
     if let Some(boc_str) = block.get("boc").and_then(Value::as_str) {
         return base64::engine::general_purpose::STANDARD
@@ -580,6 +581,18 @@ fn decode_block_boc_fields(block: &Value) -> anyhow::Result<Vec<u8>> {
         .get("data")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::format_err!("block has neither `boc` nor `data`"))?;
+    decompress_block_payload(data_b64)
+}
+
+/// Reconstruct full bincode `Envelope<AckiNackiBlock>` from modern gql block fields.
+#[allow(dead_code)]
+fn reconstruct_block_envelope(block: &Value) -> anyhow::Result<Vec<u8>> {
+    use std::collections::HashMap;
+
+    let data_b64 = block
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::format_err!("missing data"))?;
     let aggregated_signature = parse_graphql_byte_blob(
         block
             .get("aggregated_signature")
@@ -592,13 +605,16 @@ fn decode_block_boc_fields(block: &Value) -> anyhow::Result<Vec<u8>> {
     )?;
     let block_data = decompress_block_payload(data_b64)?;
 
-    let mut boc = Vec::with_capacity(
-        aggregated_signature.len() + signature_occurrences.len() + block_data.len(),
-    );
-    boc.extend_from_slice(&aggregated_signature);
-    boc.extend_from_slice(&signature_occurrences);
-    boc.extend_from_slice(&block_data);
-    Ok(boc)
+    // DB stores occurrences as bincode(HashMap); envelope wire format uses sorted Vec<(u16,u16)>.
+    let occ_map: HashMap<u16, u16> =
+        bincode::deserialize(&signature_occurrences).context("decode signature_occurrences")?;
+    let mut occ_vec: Vec<(u16, u16)> = occ_map.into_iter().collect();
+    occ_vec.sort_by_key(|(idx, _)| *idx);
+
+    let mut envelope = aggregated_signature;
+    envelope.extend(bincode::serialize(&occ_vec).context("encode signature_occurrences vec")?);
+    envelope.extend_from_slice(&block_data);
+    Ok(envelope)
 }
 
 fn parse_graphql_byte_blob(v: &Value) -> anyhow::Result<Vec<u8>> {

@@ -5,7 +5,10 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 const NUM_BLOCKS: u32 = 10;
-const GQL_ENDPOINT: &str = "http://localhost/graphql";
+fn gql_endpoint() -> String {
+    std::env::var("BRIDGE_GQL_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost/graphql".to_string())
+}
 
 #[tokio::test]
 async fn test_prove_10_live_blocks() {
@@ -48,7 +51,7 @@ async fn test_prove_10_live_blocks() {
     println!("[timing] key load/gen: {:?}", t.elapsed());
 
     // 3. Connect to node.
-    let gql = bridge_prover_lib::gql_client::create_client(GQL_ENDPOINT)
+    let gql = bridge_prover_lib::gql_client::create_client(&gql_endpoint())
         .expect("failed to create GQL client");
 
     // 4. Find a starting point: pick a recent block.

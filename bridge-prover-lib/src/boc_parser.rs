@@ -21,46 +21,60 @@ pub struct ParsedAttestation {
     pub signature_occurrences: HashMap<u16, u16>,
 }
 
-/// Extract all attestation envelopes from a block's raw BOC bytes.
-///
-/// The BOC is the base64-decoded `boc` field. We skip the outer Envelope header
-/// (the block's own signature) and scan the remaining block data for nested
-/// `Envelope<AttestationData>` structures identified by their 192-byte signature marker.
-pub fn extract_attestations_from_boc(boc: &[u8]) -> anyhow::Result<Vec<ParsedAttestation>> {
-    if boc.len() < 220 {
-        bail!("BOC too short: {} bytes", boc.len());
-    }
-
-    // Skip the outer Envelope header (block's own attestation).
-    // aggregated_signature: u64(len=192) + 192 bytes = 200
-    let outer_sig_len = read_u64(boc, 0)?;
-    if outer_sig_len != 192 {
-        bail!("unexpected outer sig_len: {} (expected 192)", outer_sig_len);
-    }
-    let outer_num_occ = read_u64(boc, 200)?;
-    if outer_num_occ > 100 {
-        bail!("unexpected outer num_occurrences: {}", outer_num_occ);
-    }
-    let block_data_start = 200 + 8 + (outer_num_occ as usize) * 4;
-
-    // Scan for nested attestation envelopes.
+/// Extract attestation envelopes by scanning `data` from `start` for 192-byte sig markers.
+pub fn scan_attestations_in_buffer(data: &[u8], start: usize) -> Vec<ParsedAttestation> {
     let mut attestations = Vec::new();
-    let mut pos = block_data_start;
+    let mut pos = start;
 
-    while pos + 220 < boc.len() {
-        let val = read_u64(boc, pos).unwrap_or(0);
+    while pos + 220 < data.len() {
+        let val = read_u64(data, pos).unwrap_or(0);
         if val == 192 {
-            if let Ok(att) = try_parse_attestation_envelope(boc, pos) {
-                let end = pos + att.raw_bytes.len();
+            if let Ok(att) = try_parse_attestation_envelope(data, pos) {
+                pos += att.raw_bytes.len();
                 attestations.push(att);
-                pos = end;
                 continue;
             }
         }
         pos += 1;
     }
 
-    Ok(attestations)
+    attestations
+}
+
+/// Extract all attestation envelopes from decompressed gql `data` (bincode `AckiNackiBlock`).
+pub fn extract_attestations_from_block_data(block_data: &[u8]) -> anyhow::Result<Vec<ParsedAttestation>> {
+    if block_data.len() < 220 {
+        bail!("block data too short: {} bytes", block_data.len());
+    }
+    Ok(scan_attestations_in_buffer(block_data, 0))
+}
+
+/// Extract all attestation envelopes from a block's raw BOC bytes.
+///
+/// Legacy nodes expose a single base64 `boc` field (full bincode `Envelope<AckiNackiBlock>`).
+/// Modern gql-server stores the payload in zstd-compressed `data` — callers should prefer
+/// [`extract_attestations_from_block_data`] for that path.
+pub fn extract_attestations_from_boc(boc: &[u8]) -> anyhow::Result<Vec<ParsedAttestation>> {
+    if boc.len() < 220 {
+        bail!("BOC too short: {} bytes", boc.len());
+    }
+
+    // Full legacy envelope: skip outer header then scan block payload.
+    if read_u64(boc, 0)? == 192 {
+        let outer_num_occ = read_u64(boc, 200)?;
+        if outer_num_occ <= 100 {
+            let block_data_start = 200 + 8 + (outer_num_occ as usize) * 4;
+            if block_data_start < boc.len() {
+                let found = scan_attestations_in_buffer(boc, block_data_start);
+                if !found.is_empty() {
+                    return Ok(found);
+                }
+            }
+        }
+    }
+
+    // Fallback: gql `data`-only payload or malformed outer header.
+    extract_attestations_from_block_data(boc)
 }
 
 /// Try to parse an `Envelope<AttestationData>` at the given offset.

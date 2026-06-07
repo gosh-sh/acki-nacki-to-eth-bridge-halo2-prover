@@ -28,7 +28,19 @@ pub async fn fetch_bk_set(client: &GqlClient) -> anyhow::Result<HashMap<u16, Vec
         }
     }
     if updates.is_empty() {
-        bail!("no bkSetUpdates found — node may not have produced blocks yet");
+        for path in ["bk_set.json", "../bk_set.json"] {
+            if std::path::Path::new(path).exists() {
+                info!(
+                    "no bkSetUpdates on node; falling back to BK set config file {}",
+                    path
+                );
+                return load_bk_set_from_config(path);
+            }
+        }
+        bail!(
+            "no bkSetUpdates found and no bk_set.json fallback — genesis BK set may not be \
+             captured in gql history; place a signer_index→pubkey map in bk_set.json"
+        );
     }
 
     let mut bk_set: HashMap<u16, Vec<u8>> = HashMap::new();

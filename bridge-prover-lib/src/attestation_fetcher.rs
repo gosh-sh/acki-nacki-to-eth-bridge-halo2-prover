@@ -31,7 +31,11 @@ pub async fn fetch_attestation_for_block(
             target_seq_no
         );
 
-        let attestations = crate::boc_parser::extract_attestations_from_boc(&boc)?;
+        let attestations = if boc.len() >= 220 && u64::from_le_bytes(boc[0..8].try_into().unwrap()) == 192 {
+            crate::boc_parser::extract_attestations_from_boc(&boc)?
+        } else {
+            crate::boc_parser::extract_attestations_from_block_data(&boc)?
+        };
         info!(
             "found {} attestations in block seq={}",
             attestations.len(),
