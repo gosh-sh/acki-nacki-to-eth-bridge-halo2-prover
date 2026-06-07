@@ -74,7 +74,11 @@ async fn live_primary_attestation_prove_verify_roundtrip() {
         }
     };
 
-    let att = match fetch_attestation_for_block(&gql, 1024).await {
+    let target: u32 = std::env::var("BRIDGE_TARGET_SEQ")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1024);
+    let att = match fetch_attestation_for_block(&gql, target).await {
         Ok(a) => a,
         Err(e) => {
             eprintln!("skip: attestation fetch failed: {e}");
@@ -128,7 +132,10 @@ async fn live_primary_attestation_prove_verify_roundtrip() {
         .expect("primary keys");
     key_manager.load_primary_pk().expect("load pk");
 
-    let last_seen = 512u32;
+    let last_seen: u32 = std::env::var("BRIDGE_LAST_SEEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(target.saturating_sub(512));
     let out = generate_primary_proof(
         &key_manager,
         &att.raw_bytes,
