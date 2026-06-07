@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use base64::Engine;
 use serde_json::{json, Value};
 
 /// Lightweight GraphQL client for the acki-nacki node.
@@ -65,14 +66,13 @@ impl GqlClient {
 
     /// Fetch the hash and BOC of a block by seq_no.
     ///
-    /// Uses cursor-based pagination: queries blocks from the end, walking backwards
-    /// until we find the target seq_no. Returns (hash, boc_bytes).
+    /// Modern gql-server exposes `data` + `aggregated_signature` + `signature_occurrences`
+    /// instead of the legacy `boc` field. We reconstruct the bincode `Envelope<AckiNackiBlock>`
+    /// bytes that `boc_parser` expects.
     pub async fn query_block_boc_by_seq_no(&self, seq_no: u64) -> anyhow::Result<(String, Vec<u8>)> {
-        // Strategy: query a window of recent blocks and find the one with matching seq_no.
-        // If not found, try larger windows or use the blockByHeight endpoint.
         let tid = "00000000000000000000000000000000000000000000000000000000000000000000";
         let q = format!(
-            r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seq_no}) {{ hash boc }} }} }}"#
+            r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seq_no}) {{ hash data aggregated_signature signature_occurrences }} }} }}"#
         );
         let data = self.query(&q).await?;
         let block = data
@@ -82,29 +82,21 @@ impl GqlClient {
             anyhow::bail!("block at seq_no={} not found", seq_no);
         }
         let hash = block.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let boc_str = block.get("boc").and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::format_err!("no boc for block at seq_no={}", seq_no))?;
-        use base64::Engine;
-        let boc_bytes = base64::engine::general_purpose::STANDARD
-            .decode(boc_str)
-            .context("failed to base64-decode BOC")?;
+        let boc_bytes = decode_block_boc_fields(block)
+            .with_context(|| format!("failed to decode block BOC at seq_no={}", seq_no))?;
         Ok((hash, boc_bytes))
     }
 
-    /// Fetch a block's raw BOC (base64) by hash.
+    /// Fetch a block's raw BOC bytes by hash.
     pub async fn query_block_boc(&self, hash: &str) -> anyhow::Result<Vec<u8>> {
         let q = format!(
-            r#"{{ blockchain {{ block(hash: "{hash}") {{ boc }} }} }}"#
+            r#"{{ blockchain {{ block(hash: "{hash}") {{ data aggregated_signature signature_occurrences }} }} }}"#
         );
         let data = self.query(&q).await?;
-        let boc_str = data
-            .pointer("/blockchain/block/boc")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::format_err!("block {} not found or no boc", hash))?;
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .decode(boc_str)
-            .context("failed to base64-decode BOC")
+        let block = data
+            .pointer("/blockchain/block")
+            .ok_or_else(|| anyhow::format_err!("block {} not found", hash))?;
+        decode_block_boc_fields(block).with_context(|| format!("failed to decode block BOC for {hash}"))
     }
 
     /// Fetch bkSetUpdates (light — no attestation subfields).
@@ -570,6 +562,72 @@ fn parse_proof_block(value: &serde_json::Value) -> anyhow::Result<GqlProofBlock>
         history_proofs,
         block_merkle_tree_leaves,
     })
+}
+
+/// Decode GraphQL block fields into the bincode `Envelope<AckiNackiBlock>` bytes.
+///
+/// Legacy nodes expose a single base64 `boc`. Modern gql-server (poseidon_dex+)
+/// stores the envelope header in `aggregated_signature` + `signature_occurrences`
+/// and the payload in zstd-compressed (or raw) base64 `data`.
+fn decode_block_boc_fields(block: &Value) -> anyhow::Result<Vec<u8>> {
+    if let Some(boc_str) = block.get("boc").and_then(Value::as_str) {
+        return base64::engine::general_purpose::STANDARD
+            .decode(boc_str)
+            .context("failed to base64-decode legacy BOC");
+    }
+
+    let data_b64 = block
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::format_err!("block has neither `boc` nor `data`"))?;
+    let aggregated_signature = parse_graphql_byte_blob(
+        block
+            .get("aggregated_signature")
+            .ok_or_else(|| anyhow::format_err!("missing aggregated_signature"))?,
+    )?;
+    let signature_occurrences = parse_graphql_byte_blob(
+        block
+            .get("signature_occurrences")
+            .ok_or_else(|| anyhow::format_err!("missing signature_occurrences"))?,
+    )?;
+    let block_data = decompress_block_payload(data_b64)?;
+
+    let mut boc = Vec::with_capacity(
+        aggregated_signature.len() + signature_occurrences.len() + block_data.len(),
+    );
+    boc.extend_from_slice(&aggregated_signature);
+    boc.extend_from_slice(&signature_occurrences);
+    boc.extend_from_slice(&block_data);
+    Ok(boc)
+}
+
+fn parse_graphql_byte_blob(v: &Value) -> anyhow::Result<Vec<u8>> {
+    if let Some(arr) = v.as_array() {
+        return arr
+            .iter()
+            .map(|x| {
+                x.as_u64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .ok_or_else(|| anyhow::format_err!("non-byte value in GraphQL byte array"))
+            })
+            .collect();
+    }
+    if let Some(s) = v.as_str() {
+        return base64::engine::general_purpose::STANDARD
+            .decode(s)
+            .context("failed to base64-decode byte blob");
+    }
+    bail!("expected byte array or base64 string")
+}
+
+fn decompress_block_payload(data_b64: &str) -> anyhow::Result<Vec<u8>> {
+    let compressed = base64::engine::general_purpose::STANDARD
+        .decode(data_b64)
+        .context("failed to base64-decode block data")?;
+    match zstd::decode_all(compressed.as_slice()) {
+        Ok(block) => Ok(block),
+        Err(_) => Ok(compressed),
+    }
 }
 
 fn required_string<'a>(v: &'a serde_json::Value, field: &str) -> anyhow::Result<&'a str> {
