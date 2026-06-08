@@ -3,8 +3,7 @@
 //! and event tooling actually use is implemented.
 //!
 //! Together with `crate::poseidon_dense` this lets the workspace consume the
-//! node's GraphQL metadata without pulling in `node-block-client` (and through
-//! it the whole `acki-nacki` workspace).
+//! node's GraphQL metadata without depending on the `acki-nacki` workspace.
 
 use std::str::FromStr;
 

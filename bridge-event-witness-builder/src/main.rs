@@ -12,7 +12,8 @@
 //!     `ext_msg_leaf` (= `Poseidon96(dapp || account || repr_hash)`) up to
 //!     the block's `ext_out_messages_root`. Built from the same
 //!     `tracked_ext_out_messages` map the node uses (see
-//!     `node_block_client::history_proof::dense_merkle_proof`).
+//!     `history_proof::dense_merkle_proof` in
+//!     `acki-nacki/node/libs/history-proof/src/lib.rs`).
 //!   * `block_tree_proof` — Poseidon Merkle proof from this block's
 //!     `block_leaf` (= `Poseidon96(block_id || envelope_hash || ext_out_root)`)
 //!     up to `root_1` (the L1 history-window root the verifier mirrors).

@@ -120,8 +120,9 @@ MSIG_KEY_PATH = os.path.join(WORK_DIR, "msig_withdrawals_e2e.keys.json")
 # ── History-window math constants ─────────────────────────────────────────────
 # W = HISTORY_PROOF_WINDOW_SIZE. Production: 128.
 # P = THINNING_FACTOR_P. Prover proves every P-th key block; bundle width = W*P.
-# Keep both in sync with `node-block-client::history_proof::
-# HISTORY_PROOF_WINDOW_SIZE` and `bridge-prover-lib::THINNING_FACTOR_P`.
+# Keep both in sync with `history_proof::HISTORY_PROOF_WINDOW_SIZE`
+# (acki-nacki/node/libs/history-proof/src/lib.rs) and
+# `bridge-prover-lib::THINNING_FACTOR_P`.
 W           = 128
 P           = 4
 MAX_LAYERS  = 10

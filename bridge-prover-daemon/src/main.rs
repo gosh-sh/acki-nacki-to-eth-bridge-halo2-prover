@@ -49,7 +49,7 @@ const ENV_GQL_ENDPOINT: &str = "BRIDGE_GQL_ENDPOINT";
 const ENV_BOOTSTRAP_SEQNO: &str = "BRIDGE_BOOTSTRAP_SEQNO";
 
 // History window size — pulled from the vendored poseidon_dense constant so
-// the prover and verifier always agree without depending on node-block-client.
+// the prover and verifier always agree without depending on the node workspace.
 const HISTORY_WINDOW_SIZE: u64 =
     bridge_prover_lib::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE as u64;
 
