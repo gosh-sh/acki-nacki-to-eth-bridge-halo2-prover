@@ -58,7 +58,7 @@ Pipeline (Steps 1-7 from the original orchestrator, then STOP):
   2. Wait for the W·P "fire window" so the event lands in the right
      bundle slot (witness-builder constraint — will go away with the
      contract-side rewrite).
-  3. Call `TokenBridge.initiateWithdrawal(dstChainId, recipient)` from
+  3. Call `USDCBridge.initiateWithdrawal(dstChainId, recipient)` from
      the multisig. The contract burns ECC and emits
      `WithdrawalInitiated` as an ExtOut message.
   4. Capture event metadata via GraphQL: BOC, block_id, seq_no,
@@ -115,12 +115,20 @@ os.environ["PATH"] = os.path.join(_HERE, "bin") + os.pathsep + os.environ.get("P
 from helper import common
 
 # ── Addresses ─────────────────────────────────────────────────────────────────
-TOKEN_BRIDGE_ADDRESS = "0:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
-GIVER_ADDRESS        = "0:1111111111111111111111111111111111111111111111111111111111111111"
+# tvm-cli v3 requires `<dapp_id>::<account_id>` for CLI args / `account` queries.
+# ABI payload `address` fields (e.g. `dest`) still take legacy `0:<acc_id>`.
+USDC_BRIDGE_ADDRESS_LEGACY = "0:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+GIVER_ADDRESS_LEGACY       = "0:1111111111111111111111111111111111111111111111111111111111111111"
+
+USDC_BRIDGE_ADDRESS = common.to_dapp_address(USDC_BRIDGE_ADDRESS_LEGACY)
+GIVER_ADDRESS       = common.to_dapp_address(GIVER_ADDRESS_LEGACY)
+
+# Split for v3 GQL `blockchain.account(account_id:, dapp_id:)`.
+USDC_BRIDGE_DAPP_ID, USDC_BRIDGE_ACCOUNT_ID = USDC_BRIDGE_ADDRESS.split("::", 1)
 
 # ── ABIs / TVCs (bundled under python/contracts/) ─────────────────────────────
 _CONTRACTS = os.path.join(_HERE, "contracts")
-TOKEN_BRIDGE_ABI = os.path.join(_CONTRACTS, "TokenBridge.abi.json")
+USDC_BRIDGE_ABI  = os.path.join(_CONTRACTS, "USDCBridge.abi.json")
 GIVER_ABI        = os.path.join(_CONTRACTS, "GiverV3.abi.json")
 GIVER_KEY_PATH   = os.path.join(_CONTRACTS, "GiverV3.keys.json")
 MSIG_ABI         = os.path.join(_CONTRACTS, "UpdateCustodianMultisigWallet.abi.json")
@@ -185,9 +193,10 @@ def _gql(query: str):
 
 
 def fetch_bridge_extouts(limit: int = 500):
+    # v3 GQL schema: `blockchain.account(account_id:, dapp_id:)`.
     q = f'''{{
       blockchain {{
-        account(address: "{TOKEN_BRIDGE_ADDRESS}") {{
+        account(account_id: "{USDC_BRIDGE_ACCOUNT_ID}", dapp_id: "{USDC_BRIDGE_DAPP_ID}") {{
           messages(msg_type: [ExtOut], last: {limit}) {{
             edges {{ node {{
               id boc body src dst created_at
@@ -213,8 +222,13 @@ def fetch_bridge_extouts(limit: int = 500):
     return nodes
 
 
-def fetch_account_dapp_id(address: str) -> str:
-    q = f'{{ blockchain {{ account(address: "{address}") {{ info {{ dapp_id }} }} }} }}'
+def fetch_account_dapp_id(account_id: str, dapp_id: str) -> str:
+    # v3 GQL takes split account_id / dapp_id.
+    q = f'''{{ blockchain {{
+        account(account_id: "{account_id}", dapp_id: "{dapp_id}") {{
+            info {{ dapp_id }}
+        }}
+    }} }}'''
     data = _gql(q)
     info = (data.get("data") or {}).get("blockchain", {}).get("account", {}).get("info") or {}
     return info.get("dapp_id") or ""
@@ -249,7 +263,7 @@ def encode_initiate_withdrawal_body(dst_chain_id: int, recipient_hex: str) -> st
         "dstChainId": str(dst_chain_id),
         "recipient":  recipient_hex,
     })
-    cmd = (f"{common.TVM_CLI} -j body --abi {TOKEN_BRIDGE_ABI} "
+    cmd = (f"{common.TVM_CLI} -j body --abi {USDC_BRIDGE_ABI} "
            f"initiateWithdrawal '{params}'")
     out = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode().strip()
     return json.loads(out)["Message"]
@@ -269,7 +283,13 @@ def deploy_multisig():
 
     if os.path.exists(MSIG_KEY_PATH):
         os.remove(MSIG_KEY_PATH)
-    msig_address = common.generate_address(msig_tvc_copy, MSIG_KEY_PATH)
+    raw_msig_address = common.generate_address(msig_tvc_copy, MSIG_KEY_PATH)
+    # Self-rooted deploy: dapp_id == account_id (tvm-cli v3 requires
+    # --dst-dapp-id on every deployx).
+    msig_account_id = raw_msig_address.split(":", 1)[1] if ":" in raw_msig_address else raw_msig_address
+    msig_dapp_id    = msig_account_id
+    msig_address        = f"{msig_dapp_id}::{msig_account_id}"      # CLI / query form
+    msig_address_legacy = f"0:{msig_account_id}"                     # ABI payload form
     pubkey = common.read_public_key(MSIG_KEY_PATH)
     log(f"  multisig address: {msig_address}")
 
@@ -280,7 +300,7 @@ def deploy_multisig():
         GIVER_ADDRESS, GIVER_ABI, GIVER_KEY_PATH,
         "sendCurrencyWithFlag",
         {
-            "dest":   msig_address,
+            "dest":   msig_address_legacy,   # ABI `address` field — legacy form
             "value":  "200000000000000",
             "ecc":    {str(ECC_ID_FOR_BURN): str(fund_value)},
             "flag":   "17",
@@ -304,7 +324,8 @@ def deploy_multisig():
         "value":           100_000_000,
     }
     common.execute_cli_cmd(
-        f"deployx --abi {msig_abi_copy} --keys {MSIG_KEY_PATH} {msig_tvc_copy}.tvc "
+        f"deployx --abi {msig_abi_copy} --keys {MSIG_KEY_PATH} "
+        f"--dst-dapp-id {msig_dapp_id} {msig_tvc_copy}.tvc "
         f"{common.format_params(constructor_params)}",
         True,
     )
@@ -319,7 +340,7 @@ def deploy_multisig():
         common.call_contract(
             GIVER_ADDRESS, GIVER_ABI, GIVER_KEY_PATH,
             "sendCurrencyWithFlag",
-            {"dest": msig_address, "value": "2000000000",
+            {"dest": msig_address_legacy, "value": "2000000000",
              "ecc": {str(ECC_ID_FOR_BURN): str(total_ecc)}, "flag": "1"}
         )
         time.sleep(5)
@@ -330,7 +351,7 @@ def deploy_multisig():
 def call_initiate_withdrawal(msig_address, msig_abi, dst_chain_id, recipient_hex):
     payload = encode_initiate_withdrawal_body(dst_chain_id, recipient_hex)
     params = {
-        "dest":    TOKEN_BRIDGE_ADDRESS,
+        "dest":    USDC_BRIDGE_ADDRESS_LEGACY,   # ABI `address` field — legacy form
         "value":   "1000000000",
         "cc":      {str(ECC_ID_FOR_BURN): str(WITHDRAWAL_AMOUNT)},
         "bounce":  False,
@@ -380,12 +401,12 @@ def capture_event_metadata(baseline_msg_ids: set):
     log(f"  block seq_no={block['seq_no']} height={block['height']} "
         f"key_block={block['key_block']}")
 
-    account_dapp_id_hex = fetch_account_dapp_id(TOKEN_BRIDGE_ADDRESS)
+    account_dapp_id_hex = fetch_account_dapp_id(USDC_BRIDGE_ACCOUNT_ID, USDC_BRIDGE_DAPP_ID)
     if not account_dapp_id_hex:
         account_dapp_id_hex = "0" * 64
     log(f"  account_dapp_id:  {account_dapp_id_hex}")
 
-    account_id_hex = TOKEN_BRIDGE_ADDRESS.split(":", 1)[1]
+    account_id_hex = USDC_BRIDGE_ACCOUNT_ID
     assert len(account_id_hex) == 64
 
     return {
@@ -486,13 +507,13 @@ def main():
     log(f"  PROVER_DIR:  {PROVER_DIR}")
     log(f"  GRAPHQL_URL: {GRAPHQL_URL}")
     log(f"  W = {W}, P = {P} (bundle = {W*P} blocks), MAX_LAYERS = {MAX_LAYERS}")
-    assert common.is_account_active(TOKEN_BRIDGE_ADDRESS), \
-        f"TokenBridge not active at {TOKEN_BRIDGE_ADDRESS}"
-    log(f"  TokenBridge active at {TOKEN_BRIDGE_ADDRESS}")
+    assert common.is_account_active(USDC_BRIDGE_ADDRESS), \
+        f"USDCBridge not active at {USDC_BRIDGE_ADDRESS}"
+    log(f"  USDCBridge active at {USDC_BRIDGE_ADDRESS}")
 
     baseline = fetch_bridge_extouts(limit=500)
     baseline_ids = {n["id"] for n in baseline}
-    log(f"  baseline ExtOut messages from TokenBridge: {len(baseline_ids)}")
+    log(f"  baseline ExtOut messages from USDCBridge: {len(baseline_ids)}")
 
     msig_address, msig_abi = deploy_multisig()
 

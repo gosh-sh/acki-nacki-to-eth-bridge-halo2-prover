@@ -15,3 +15,6 @@ state/
 # Python orchestrator runtime artefacts
 python/**/__pycache__/
 python/tvm-cli.conf.json
+# tvm-cli also writes a config to whichever CWD it runs in; the test orchestrator
+# invokes it from the repo root, leaving this artefact behind.
+/tvm-cli.conf.json

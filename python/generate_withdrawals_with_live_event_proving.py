@@ -13,7 +13,7 @@ Pipeline (single event for v1; loopable later):
 
   1. Deploy multisig + fund with ECC[2] (same pattern as
      `tests/exchange/generate_withdrawals.py`).
-  2. Trigger ONE `WithdrawalInitiated` event via TokenBridge.
+  2. Trigger ONE `WithdrawalInitiated` event via USDCBridge.
   3. Capture event metadata via GraphQL — (event_boc_b64, block_id,
      block_seq_no, block_height, envelope_hash, account_dapp_id,
      account_id) — by:
@@ -85,12 +85,23 @@ os.environ["PATH"] = os.path.join(_HERE, "bin") + os.pathsep + os.environ.get("P
 from helper import common
 
 # ── Addresses ─────────────────────────────────────────────────────────────────
-TOKEN_BRIDGE_ADDRESS = "0:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
-GIVER_ADDRESS        = "0:1111111111111111111111111111111111111111111111111111111111111111"
+# tvm-cli v3 requires `<dapp_id>::<account_id>` for CLI args / `account` queries.
+# ABI payload `address` fields (e.g. `dest`) still take legacy `0:<acc_id>`.
+# See `python/contracts/README` or `tvm-sdk/docs/MIGRATION-3.0.md`.
+USDC_BRIDGE_ADDRESS_LEGACY = "0:1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+GIVER_ADDRESS_LEGACY       = "0:1111111111111111111111111111111111111111111111111111111111111111"
+
+USDC_BRIDGE_ADDRESS = common.to_dapp_address(USDC_BRIDGE_ADDRESS_LEGACY)
+GIVER_ADDRESS       = common.to_dapp_address(GIVER_ADDRESS_LEGACY)
+
+# account_id / dapp_id components for direct GraphQL queries (v3 schema:
+# blockchain.account(account_id:, dapp_id:)).
+USDC_BRIDGE_DAPP_ID, USDC_BRIDGE_ACCOUNT_ID = USDC_BRIDGE_ADDRESS.split("::", 1)
 
 # ── ABIs / TVCs (bundled under python/contracts/) ─────────────────────────────
 _CONTRACTS = os.path.join(_HERE, "contracts")
-TOKEN_BRIDGE_ABI = os.path.join(_CONTRACTS, "TokenBridge.abi.json")
+USDC_BRIDGE_ABI  = os.path.join(_CONTRACTS, "USDCBridge.abi.json")
+USDC_BRIDGE_KEYS = os.path.join(_CONTRACTS, "USDCBridge.keys.json")
 GIVER_ABI        = os.path.join(_CONTRACTS, "GiverV3.abi.json")
 GIVER_KEY_PATH   = os.path.join(_CONTRACTS, "GiverV3.keys.json")
 MSIG_ABI         = os.path.join(_CONTRACTS, "UpdateCustodianMultisigWallet.abi.json")
@@ -99,7 +110,13 @@ MSIG_TVC_STEM    = os.path.join(_CONTRACTS, "UpdateCustodianMultisigWallet")
 # ── Withdrawal parameters ─────────────────────────────────────────────────────
 # Only one event for v1 — the goal is to validate the pipeline, not throughput.
 WITHDRAWAL_AMOUNT  = 1_000_000
-ECC_ID_FOR_BURN    = 2   # Shell (giver has it at genesis)
+# Two ECC currencies are in play:
+#   - ECC[2] Shell  → giver→multisig fund tx; bootstraps vmshell (gas).
+#   - ECC[3] USDC   → the only token USDCBridge.initiateWithdrawal accepts.
+#                     Acquired by calling USDCBridge.mintAndSend signed with
+#                     the bridge owner key (zerostate-baked USDCBridge.keys.json).
+ECC_ID_FOR_BURN    = 2   # Shell — gas bootstrap (giver has it at genesis)
+USDC_TOKEN_ID      = 3   # ECC[3] — token attached to initiateWithdrawal
 DST_CHAIN_ID       = 1
 RECIPIENT_HEX      = "742d35cc6634c0532925a3b844bc454e4438f44e"
 
@@ -165,11 +182,14 @@ def _gql(query: str):
 
 
 def fetch_bridge_extouts(limit: int = 500):
-    """Fetch recent ExtOut messages from TokenBridge with all fields needed
-    for downstream Circuit 4 witness construction in one round-trip."""
+    """Fetch recent ExtOut messages from USDCBridge with all fields needed
+    for downstream Circuit 4 witness construction in one round-trip.
+
+    v3 GQL schema: `blockchain.account(account_id:, dapp_id:)` (the old
+    `account(address:)` form was removed)."""
     q = f'''{{
       blockchain {{
-        account(address: "{TOKEN_BRIDGE_ADDRESS}") {{
+        account(account_id: "{USDC_BRIDGE_ACCOUNT_ID}", dapp_id: "{USDC_BRIDGE_DAPP_ID}") {{
           messages(msg_type: [ExtOut], last: {limit}) {{
             edges {{ node {{
               id boc body src dst created_at
@@ -197,8 +217,15 @@ def fetch_bridge_extouts(limit: int = 500):
     return nodes
 
 
-def fetch_account_dapp_id(address: str) -> str:
-    q = f'{{ blockchain {{ account(address: "{address}") {{ info {{ dapp_id }} }} }} }}'
+def fetch_account_dapp_id(account_id: str, dapp_id: str) -> str:
+    """v3 GQL takes split account_id / dapp_id; returns the on-chain dapp_id
+    (often the same as the input for zerostate-deployed contracts, but
+    surfaced for parity with the exporter's expectations)."""
+    q = f'''{{ blockchain {{
+        account(account_id: "{account_id}", dapp_id: "{dapp_id}") {{
+            info {{ dapp_id }}
+        }}
+    }} }}'''
     data = _gql(q)
     info = (data.get("data") or {}).get("blockchain", {}).get("account", {}).get("info") or {}
     return info.get("dapp_id") or ""
@@ -238,7 +265,7 @@ def encode_initiate_withdrawal_body(dst_chain_id: int, recipient_hex: str) -> st
         "dstChainId": str(dst_chain_id),
         "recipient":  recipient_hex,
     })
-    cmd = (f"{common.TVM_CLI} -j body --abi {TOKEN_BRIDGE_ABI} "
+    cmd = (f"{common.TVM_CLI} -j body --abi {USDC_BRIDGE_ABI} "
            f"initiateWithdrawal '{params}'")
     out = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT).decode().strip()
     return json.loads(out)["Message"]
@@ -258,7 +285,13 @@ def deploy_multisig():
 
     if os.path.exists(MSIG_KEY_PATH):
         os.remove(MSIG_KEY_PATH)
-    msig_address = common.generate_address(msig_tvc_copy, MSIG_KEY_PATH)
+    raw_msig_address = common.generate_address(msig_tvc_copy, MSIG_KEY_PATH)
+    # Self-rooted deploy: dapp_id == account_id (tvm-cli v3 requires
+    # --dst-dapp-id on every deployx).
+    msig_account_id = raw_msig_address.split(":", 1)[1] if ":" in raw_msig_address else raw_msig_address
+    msig_dapp_id    = msig_account_id
+    msig_address        = f"{msig_dapp_id}::{msig_account_id}"      # CLI / query form
+    msig_address_legacy = f"0:{msig_account_id}"                     # ABI payload form
     pubkey = common.read_public_key(MSIG_KEY_PATH)
     log(f"  multisig address: {msig_address}")
 
@@ -274,7 +307,7 @@ def deploy_multisig():
         GIVER_ADDRESS, GIVER_ABI, GIVER_KEY_PATH,
         "sendCurrencyWithFlag",
         {
-            "dest":   msig_address,
+            "dest":   msig_address_legacy,   # ABI `address` field — legacy form
             "value":  "200000000000000",
             "ecc":    {str(ECC_ID_FOR_BURN): str(fund_value)},
             "flag":   "17",
@@ -298,7 +331,8 @@ def deploy_multisig():
         "value":           100_000_000,
     }
     common.execute_cli_cmd(
-        f"deployx --abi {msig_abi_copy} --keys {MSIG_KEY_PATH} {msig_tvc_copy}.tvc "
+        f"deployx --abi {msig_abi_copy} --keys {MSIG_KEY_PATH} "
+        f"--dst-dapp-id {msig_dapp_id} {msig_tvc_copy}.tvc "
         f"{common.format_params(constructor_params)}",
         True,
     )
@@ -314,7 +348,7 @@ def deploy_multisig():
         common.call_contract(
             GIVER_ADDRESS, GIVER_ABI, GIVER_KEY_PATH,
             "sendCurrencyWithFlag",
-            {"dest": msig_address, "value": "2000000000",
+            {"dest": msig_address_legacy, "value": "2000000000",
              "ecc": {str(ECC_ID_FOR_BURN): str(total_ecc)}, "flag": "1"}
         )
         time.sleep(5)
@@ -322,12 +356,38 @@ def deploy_multisig():
     return msig_address, msig_abi_copy
 
 
+def mint_usdc_to_multisig(msig_address_legacy, amount):
+    """Mint `amount` of ECC[3] USDC to the multisig.
+
+    USDCBridge migration (TokenBridge → USDCBridge) made the bridge USDC-only:
+    `initiateWithdrawal` requires `tokenId == USDC_ECC_ID(=3)` (ERR_UNSUPPORTED_TOKEN
+    = 221 otherwise). The giver only has ECC[1] and ECC[2] at genesis, so the
+    multisig has to acquire ECC[3] before the withdraw call. The owner-key
+    `mintAndSend(recipient, value, nonce)` path is the cheapest test fixture:
+    it mints ECC[3] in-contract and transfers it (along with 1 vmshell) to
+    `recipient`. Nonce must equal current `mintNonce + 1`.
+    """
+    nonces = common.run_getter(USDC_BRIDGE_ADDRESS, USDC_BRIDGE_ABI, "getNonces")
+    mint_nonce = int(nonces["mintNonce"])
+    log(f"  USDCBridge.mintAndSend → multisig ECC[{USDC_TOKEN_ID}]={amount}, nonce={mint_nonce + 1}")
+    res = common.call_contract(
+        USDC_BRIDGE_ADDRESS, USDC_BRIDGE_ABI, USDC_BRIDGE_KEYS,
+        "mintAndSend",
+        {"recipient": msig_address_legacy,
+         "value":     str(amount),
+         "nonce":     str(mint_nonce + 1)},
+        True,
+    )
+    time.sleep(8)
+    return res
+
+
 def call_initiate_withdrawal(msig_address, msig_abi, dst_chain_id, recipient_hex):
     payload = encode_initiate_withdrawal_body(dst_chain_id, recipient_hex)
     params = {
-        "dest":    TOKEN_BRIDGE_ADDRESS,
+        "dest":    USDC_BRIDGE_ADDRESS_LEGACY,   # ABI `address` field — legacy form
         "value":   "1000000000",
-        "cc":      {str(ECC_ID_FOR_BURN): str(WITHDRAWAL_AMOUNT)},
+        "cc":      {str(USDC_TOKEN_ID): str(WITHDRAWAL_AMOUNT)},   # ECC[3] USDC required by USDCBridge
         "bounce":  False,
         "flags":   1,
         "payload": payload,
@@ -381,18 +441,17 @@ def capture_event_metadata(baseline_msg_ids: set):
     log(f"  block seq_no={block['seq_no']} height={block['height']} "
         f"key_block={block['key_block']}")
 
-    # Pull TokenBridge's own dapp_id (separate from Message.src_dapp_id,
+    # Pull USDCBridge's own dapp_id (separate from Message.src_dapp_id,
     # which on a workchain root account is also expected to be zero).
-    account_dapp_id_hex = fetch_account_dapp_id(TOKEN_BRIDGE_ADDRESS)
+    account_dapp_id_hex = fetch_account_dapp_id(USDC_BRIDGE_ACCOUNT_ID, USDC_BRIDGE_DAPP_ID)
     if not account_dapp_id_hex:
         # Workchain root has empty dapp_id — pad to 32 zero bytes which is
         # what the exporter's hex parser will accept.
         account_dapp_id_hex = "0" * 64
     log(f"  account_dapp_id:  {account_dapp_id_hex}")
 
-    # account_id = the trailing 32 bytes of TokenBridge address
-    # ("0:1a1a1a..." → "1a1a1a...")
-    account_id_hex = TOKEN_BRIDGE_ADDRESS.split(":", 1)[1]
+    # account_id = the 32-byte account_id portion of USDCBridge address.
+    account_id_hex = USDC_BRIDGE_ACCOUNT_ID
     assert len(account_id_hex) == 64
 
     return {
@@ -525,17 +584,23 @@ def main():
     log(f"  PROVER_DIR:  {PROVER_DIR}")
     log(f"  GRAPHQL_URL: {GRAPHQL_URL}")
     log(f"  W = {W}, P = {P} (bundle = {W*P} blocks), MAX_LAYERS = {MAX_LAYERS}")
-    assert common.is_account_active(TOKEN_BRIDGE_ADDRESS), \
-        f"TokenBridge not active at {TOKEN_BRIDGE_ADDRESS}"
-    log(f"  TokenBridge active at {TOKEN_BRIDGE_ADDRESS}")
+    assert common.is_account_active(USDC_BRIDGE_ADDRESS), \
+        f"USDCBridge not active at {USDC_BRIDGE_ADDRESS}"
+    log(f"  USDCBridge active at {USDC_BRIDGE_ADDRESS}")
 
     # Snapshot the ExtOut messages that already exist so we can identify
     # OUR event by exclusion. The cluster may have prior runs in its history.
     baseline = fetch_bridge_extouts(limit=500)
     baseline_ids = {n["id"] for n in baseline}
-    log(f"  baseline ExtOut messages from TokenBridge: {len(baseline_ids)}")
+    log(f"  baseline ExtOut messages from USDCBridge: {len(baseline_ids)}")
 
     msig_address, msig_abi = deploy_multisig()
+
+    # Multisig now has ECC[2] Shell (for vmshell/gas) but no ECC[3] USDC.
+    # Mint USDC into it via the bridge owner key before any withdrawal call.
+    msig_account_id = msig_address.split("::", 1)[1]
+    msig_address_legacy = f"0:{msig_account_id}"
+    mint_usdc_to_multisig(msig_address_legacy, WITHDRAWAL_AMOUNT)
 
     # ─── Wait for the firing window ───────────────────────────────────────
     # With thinning factor P=4, the verifier only stores L1 roots at
@@ -575,7 +640,7 @@ def main():
     # ─── Trigger one event ────────────────────────────────────────────────
     log_phase("Dispatching initiateWithdrawal")
     log(f"  dstChainId={DST_CHAIN_ID}, recipient=0x{RECIPIENT_HEX}, "
-        f"amount={WITHDRAWAL_AMOUNT}, tokenId={ECC_ID_FOR_BURN}")
+        f"amount={WITHDRAWAL_AMOUNT}, tokenId={USDC_TOKEN_ID}")
     call_result = call_initiate_withdrawal(
         msig_address, msig_abi, DST_CHAIN_ID, RECIPIENT_HEX
     )

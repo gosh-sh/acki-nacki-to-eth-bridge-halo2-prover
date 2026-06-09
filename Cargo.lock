@@ -399,7 +399,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "attestation-bls-checker-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#303592b607017eae86a10a59a24be1fe00296d25"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#1d59d0b2efda05354602c1a807d5ca119912d037"
 dependencies = [
  "bridge-parsers",
  "bridge-poseidon",
@@ -544,9 +544,9 @@ dependencies = [
 
 [[package]]
 name = "bitflags"
-version = "2.12.1"
+version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84d7ced0ae9557296835c32bf1b1e02b44c746701f898460fb000d7eaa84f00a"
+checksum = "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8"
 
 [[package]]
 name = "bitvec"
@@ -702,14 +702,14 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber 0.3.23",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
 ]
 
 [[package]]
 name = "bridge-event-prove-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#303592b607017eae86a10a59a24be1fe00296d25"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#1d59d0b2efda05354602c1a807d5ca119912d037"
 dependencies = [
  "bridge-poseidon",
  "dense-balanced-tree",
@@ -726,8 +726,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk)",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk)",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk)",
 ]
 
 [[package]]
@@ -766,7 +766,7 @@ dependencies = [
 [[package]]
 name = "bridge-parsers"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#303592b607017eae86a10a59a24be1fe00296d25"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#1d59d0b2efda05354602c1a807d5ca119912d037"
 dependencies = [
  "hex",
 ]
@@ -774,10 +774,11 @@ dependencies = [
 [[package]]
 name = "bridge-poseidon"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#303592b607017eae86a10a59a24be1fe00296d25"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#1d59d0b2efda05354602c1a807d5ca119912d037"
 dependencies = [
  "gosh-bls-verification",
  "halo2-base 0.4.0",
+ "halo2-ecc",
  "num-bigint 0.4.6",
  "pse-poseidon",
 ]
@@ -798,7 +799,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
 ]
 
 [[package]]
@@ -830,13 +831,13 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tracing",
- "tvm_vm 2.24.21",
+ "tvm_vm 3.0.0",
 ]
 
 [[package]]
 name = "bridge-test-data-gen"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#303592b607017eae86a10a59a24be1fe00296d25"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#1d59d0b2efda05354602c1a807d5ca119912d037"
 dependencies = [
  "anyhow",
  "bincode",
@@ -962,9 +963,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chrono"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
  "js-sys",
@@ -1827,7 +1828,7 @@ dependencies = [
 [[package]]
 name = "gosh-zk-snark-halo2-utils"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=main#16eb04b26c928c5963d15e98871192eb4faae1a9"
+source = "git+https://github.com/gosh-sh/gosh-zk-snark-halo2-utils?branch=main#0363905b350128a7d1a616b1afddb76f8c19fcc9"
 dependencies = [
  "halo2-base 0.4.0",
  "rand 0.8.6",
@@ -2059,8 +2060,9 @@ checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 [[package]]
 name = "historical-layer-hashes-movement-checker-circuit"
 version = "0.1.0"
-source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#303592b607017eae86a10a59a24be1fe00296d25"
+source = "git+https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits?branch=main#1d59d0b2efda05354602c1a807d5ca119912d037"
 dependencies = [
+ "bridge-poseidon",
  "gosh-dense-balanced-tree",
  "gosh-sha256-chip",
  "halo2-base 0.4.0",
@@ -2088,9 +2090,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.4.1"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8be7462df143984c4598a256ef469b251d7d7f9e271135073e78fc535414f3d0"
+checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
 dependencies = [
  "bytes",
  "itoa",
@@ -2529,9 +2531,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.31"
+version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "113b30b4cd05f7c06868fdb2854f66a7b9fece9a48425351cd532e810d74024f"
+checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "lru-slab"
@@ -3739,9 +3741,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.20.0"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e72c1c2cb7b223fafb600a619537a871c2818583d619401b785e7c0b746ccde2"
+checksum = "76a5c54c7310e7b8b9577c286d7e399ddd876c3e12b3ed917a8aabc4b96e9e8c"
 dependencies = [
  "base64",
  "bs58 0.5.1",
@@ -3759,9 +3761,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.20.0"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b90c488738ecb4fb0262f41f43bc40efc5868d9fb744319ddf5f5317f417bfac"
+checksum = "84d57bc0c8b9a17920c178daa6bb924850d54a9c97ab45194bb8c17ad66bb660"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -4333,8 +4335,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_abi"
-version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+version = "3.0.0"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#b520ec43547f9c172a72275b405d30afb59a7372"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4344,8 +4346,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
 ]
 
 [[package]]
@@ -4369,8 +4371,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_block"
-version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+version = "3.0.0"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#b520ec43547f9c172a72275b405d30afb59a7372"
 dependencies = [
  "anyhow",
  "base64",
@@ -4383,13 +4385,13 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
 ]
 
 [[package]]
 name = "tvm_block"
-version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk#9fe59570de80d9fa8a3764edf1556e4faed040b6"
+version = "3.0.0"
+source = "git+https://github.com/tvmlabs/tvm-sdk#4841c292889a232445a4495d61bb012bac5a3ead"
 dependencies = [
  "anyhow",
  "base64",
@@ -4402,7 +4404,7 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk)",
 ]
 
 [[package]]
@@ -4438,8 +4440,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_types"
-version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+version = "3.0.0"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#b520ec43547f9c172a72275b405d30afb59a7372"
 dependencies = [
  "aes",
  "anyhow",
@@ -4469,8 +4471,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_types"
-version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk#9fe59570de80d9fa8a3764edf1556e4faed040b6"
+version = "3.0.0"
+source = "git+https://github.com/tvmlabs/tvm-sdk#4841c292889a232445a4495d61bb012bac5a3ead"
 dependencies = [
  "aes",
  "anyhow",
@@ -4558,8 +4560,8 @@ dependencies = [
 
 [[package]]
 name = "tvm_vm"
-version = "2.24.21"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#6edd3279e2ec3662cf9242a1bed866b3df6cdd51"
+version = "3.0.0"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#b520ec43547f9c172a72275b405d30afb59a7372"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -4608,9 +4610,9 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "tvm_abi 2.24.21",
- "tvm_block 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
- "tvm_types 2.24.21 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_abi 3.0.0",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
  "typenum",
  "zstd",
 ]
@@ -5080,9 +5082,9 @@ dependencies = [
 
 [[package]]
 name = "yoke"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abe8c5fda708d9ca3df187cae8bfb9ceda00dd96231bed36e445a1a48e66f9ca"
+checksum = "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5"
 dependencies = [
  "stable_deref_trait",
  "yoke-derive",

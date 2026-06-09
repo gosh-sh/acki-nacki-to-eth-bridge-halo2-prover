@@ -633,4 +633,31 @@ def execute_graphql_query(
     raise RuntimeError("execute_graphql_query: retry loop exhausted without result")
 
 
+def to_dapp_address(addr: str) -> str:
+    """Convert a TVM workchain-prefixed address to the extended
+    dapp_id::account_id form with a zero dapp_id (required for v3 tvm-cli
+    `--addr` / `account` queries).
+
+    Accepts:
+        "0:<64-hex>"   -> "<64-zero>::<64-hex>"
+        "<64-hex>"     -> "<64-zero>::<64-hex>"
+
+    Raises ValueError on any other shape. For non-zero dapp_id, build the
+    string explicitly.
+    """
+    ZERO_DAPP = "0" * 64
+
+    if ":" in addr:
+        wc, _, acc = addr.partition(":")
+        if wc != "0":
+            raise ValueError(f"non-zero workchain not supported: {wc!r}")
+    else:
+        acc = addr
+
+    if len(acc) != 64 or not all(c in "0123456789abcdefABCDEF" for c in acc):
+        raise ValueError(f"account_id must be 64 hex chars, got: {acc!r}")
+
+    return f"{ZERO_DAPP}::{acc}"
+
+
 __check_cli__()

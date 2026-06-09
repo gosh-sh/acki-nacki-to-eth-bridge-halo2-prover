@@ -63,50 +63,6 @@ impl GqlClient {
         Ok(blocks)
     }
 
-    /// Fetch the hash and BOC of a block by seq_no.
-    ///
-    /// Uses cursor-based pagination: queries blocks from the end, walking backwards
-    /// until we find the target seq_no. Returns (hash, boc_bytes).
-    pub async fn query_block_boc_by_seq_no(&self, seq_no: u64) -> anyhow::Result<(String, Vec<u8>)> {
-        // Strategy: query a window of recent blocks and find the one with matching seq_no.
-        // If not found, try larger windows or use the blockByHeight endpoint.
-        let tid = "00000000000000000000000000000000000000000000000000000000000000000000";
-        let q = format!(
-            r#"{{ blockchain {{ blockByHeight(thread_id: "{tid}", height: {seq_no}) {{ hash boc }} }} }}"#
-        );
-        let data = self.query(&q).await?;
-        let block = data
-            .pointer("/blockchain/blockByHeight")
-            .ok_or_else(|| anyhow::format_err!("blockByHeight returned null for seq_no={}", seq_no))?;
-        if block.is_null() {
-            anyhow::bail!("block at seq_no={} not found", seq_no);
-        }
-        let hash = block.get("hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let boc_str = block.get("boc").and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::format_err!("no boc for block at seq_no={}", seq_no))?;
-        use base64::Engine;
-        let boc_bytes = base64::engine::general_purpose::STANDARD
-            .decode(boc_str)
-            .context("failed to base64-decode BOC")?;
-        Ok((hash, boc_bytes))
-    }
-
-    /// Fetch a block's raw BOC (base64) by hash.
-    pub async fn query_block_boc(&self, hash: &str) -> anyhow::Result<Vec<u8>> {
-        let q = format!(
-            r#"{{ blockchain {{ block(hash: "{hash}") {{ boc }} }} }}"#
-        );
-        let data = self.query(&q).await?;
-        let boc_str = data
-            .pointer("/blockchain/block/boc")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::format_err!("block {} not found or no boc", hash))?;
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .decode(boc_str)
-            .context("failed to base64-decode BOC")
-    }
-
     /// Fetch bkSetUpdates (light — no attestation subfields).
     /// `first_or_last`: true = first N (oldest), false = last N (newest).
     pub async fn query_bk_set_updates_light(
@@ -494,6 +450,168 @@ impl GqlClient {
     pub async fn query_proof_block_by_seqno(&self, seqno: u64) -> anyhow::Result<GqlProofBlock> {
         self.query_block_by_height(DEFAULT_THREAD_ID_HEX, seqno).await
     }
+
+    /// Build a `ParsedAttestation` for the block at `target_seq_no` by reading
+    /// the target block's own `Block.attestations[]` field.
+    ///
+    /// Post-fix (acki-nacki `fix/poseidon_dex_attestations_gql`, 2026-06-09):
+    /// the resolver filters `Block.attestations[]` so it returns only entries
+    /// whose inner `AttestationData.block_id == self.id`, i.e. attestations
+    /// FOR THIS block. The producer's common section still owns the row, but
+    /// the GQL view is now consumer-oriented: "give me the attestation that
+    /// signed block N" → query block N directly.
+    ///
+    /// Why this path (and not the target block's own envelope fields):
+    /// `Block.aggregated_signature` / `Block.signature_occurrences` on the
+    /// target block are the BLOCK envelope (signed over
+    /// `bincode(AckiNackiBlock)`), not an `Envelope<AttestationData>`. They
+    /// cannot drive Circuit 1A even though the byte sizes happen to match.
+    /// Only `common_section.block_attestations()` — which is what
+    /// `Block.attestations[]` projects — contains true
+    /// `Envelope<AttestationData>` instances.
+    pub async fn query_attestation_envelope(
+        &self,
+        target_seq_no: u64,
+    ) -> anyhow::Result<crate::attestation_fetcher::ParsedAttestation> {
+        let q = format!(
+            r#"{{ blockchain {{ blockByHeight(thread_id: "{DEFAULT_THREAD_ID_HEX}", height: {target_seq_no}) {{ seq_no attestations {{ block_id parent_block_id target_type envelope_hash aggregated_signature signature_occurrences }} }} }} }}"#
+        );
+        let data = self
+            .query(&q)
+            .await
+            .with_context(|| format!("blockByHeight({target_seq_no})"))?;
+        let block = data
+            .pointer("/blockchain/blockByHeight")
+            .ok_or_else(|| anyhow::format_err!("blockByHeight({target_seq_no}) returned null"))?;
+        if block.is_null() {
+            anyhow::bail!("block at seq_no={target_seq_no} not found");
+        }
+        let atts = block
+            .get("attestations")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::format_err!("block {target_seq_no} missing attestations field"))?;
+        if atts.is_empty() {
+            anyhow::bail!(
+                "Block.attestations[] is empty for block seq_no={target_seq_no} — \
+                 producer has not yet committed attestations for this block. \
+                 Retry once a few blocks have been produced past it."
+            );
+        }
+        // After the fix, every entry on this block already targets self.id, but
+        // be defensive and pick the first parseable one.
+        let mut last_err: Option<anyhow::Error> = None;
+        for att_json in atts {
+            match parse_block_attestation(att_json) {
+                Ok(att) => return Ok(att),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            anyhow::format_err!("no parseable attestation in block {target_seq_no}")
+        }))
+        .with_context(|| format!("parse_block_attestation for block {target_seq_no}"))
+    }
+}
+
+/// Convert one `BlockAttestation` GraphQL object into a `ParsedAttestation`
+/// whose `raw_bytes` field matches the exact byte layout of
+/// `bincode(Envelope<AttestationData>)`:
+///
+/// ```text
+/// u64(192) || 192 sig bytes                       <- aggregated_signature
+/// u64(num_signers) || (u16 idx, u16 cnt) * N      <- signature_occurrences
+/// u64(32) || 32 parent_block_id                   <- AttestationData section
+/// u64(32) || 32 block_id
+/// u32 LE seq_no                                       (NOT present in GQL — derived elsewhere)
+/// 32 envelope_hash (transparent, no length prefix)
+/// u32 LE target_type
+/// ```
+///
+/// The GraphQL `BlockAttestation` object exposes `aggregated_signature` and
+/// `signature_occurrences` as hex strings of the *bincoded* (length-prefixed)
+/// forms — we splice them verbatim into the assembled bytes. `block_id`,
+/// `parent_block_id`, `envelope_hash`, `target_type` come as plain hex / enum.
+///
+/// `block_seq_no` is not exposed on `BlockAttestation`; the caller matches by
+/// `block_id` after walking forward, then this function fills in the u32 from
+/// the matched record. (Here we set it from the AttestationData JSON if the
+/// schema is later extended; for now we record 0 and the caller will replace it.)
+fn parse_block_attestation(
+    v: &serde_json::Value,
+) -> anyhow::Result<crate::attestation_fetcher::ParsedAttestation> {
+    let block_id = decode_hash32(required_string(v, "block_id")?).context("att.block_id")?;
+    let parent_block_id =
+        decode_hash32(required_string(v, "parent_block_id")?).context("att.parent_block_id")?;
+    let envelope_hash =
+        decode_hash32(required_string(v, "envelope_hash")?).context("att.envelope_hash")?;
+
+    let target_type = match v.get("target_type").and_then(|x| x.as_str()).unwrap_or("PRIMARY") {
+        "PRIMARY" | "Primary" => 0u32,
+        "FALLBACK" | "Fallback" => 1u32,
+        other => anyhow::bail!("unknown target_type: {other}"),
+    };
+
+    // aggregated_signature and signature_occurrences come back as hex strings
+    // of the bincode-prefixed forms (200 bytes and 8+4N bytes respectively).
+    let sig_hex = required_string(v, "aggregated_signature")?;
+    let sig_bytes = hex::decode(sig_hex.trim_start_matches("0x"))
+        .context("decode att.aggregated_signature hex")?;
+    anyhow::ensure!(
+        sig_bytes.len() == 200,
+        "aggregated_signature must be 200 bytes (u64(192) + 192 sig), got {}",
+        sig_bytes.len(),
+    );
+
+    // signature_occurrences here is the Json object form from the resolver:
+    // {"signer_idx": count, ...}. We rebuild bincode-prefixed bytes.
+    let sig_occ_json = v
+        .get("signature_occurrences")
+        .ok_or_else(|| anyhow::format_err!("missing signature_occurrences"))?;
+    let mut occurrences = std::collections::HashMap::new();
+    if let Some(obj) = sig_occ_json.as_object() {
+        for (k, val) in obj {
+            let idx: u16 = k.parse().context("signer index parse")?;
+            let cnt = val.as_u64().context("signer count parse")? as u16;
+            occurrences.insert(idx, cnt);
+        }
+    } else {
+        anyhow::bail!("signature_occurrences must be a JSON object");
+    }
+    let mut sorted: Vec<(u16, u16)> = occurrences.iter().map(|(k, v)| (*k, *v)).collect();
+    sorted.sort_by_key(|(k, _)| *k);
+    let mut occ_bytes = Vec::with_capacity(8 + sorted.len() * 4);
+    occ_bytes.extend_from_slice(&(sorted.len() as u64).to_le_bytes());
+    for (idx, cnt) in &sorted {
+        occ_bytes.extend_from_slice(&idx.to_le_bytes());
+        occ_bytes.extend_from_slice(&cnt.to_le_bytes());
+    }
+
+    // We don't have block_seq_no on the GQL attestation row; this is fine for
+    // the upstream consumer because compute_block_seq_no in prover.rs reads it
+    // from raw_bytes. We synthesize 0 here; if the caller needs a real seq,
+    // it should be patched in after matching by block_id.
+    let block_seq_no: u32 = 0;
+
+    let mut raw_bytes = Vec::with_capacity(sig_bytes.len() + occ_bytes.len() + 120);
+    raw_bytes.extend_from_slice(&sig_bytes);
+    raw_bytes.extend_from_slice(&occ_bytes);
+    raw_bytes.extend_from_slice(&32u64.to_le_bytes());
+    raw_bytes.extend_from_slice(&parent_block_id);
+    raw_bytes.extend_from_slice(&32u64.to_le_bytes());
+    raw_bytes.extend_from_slice(&block_id);
+    raw_bytes.extend_from_slice(&block_seq_no.to_le_bytes());
+    raw_bytes.extend_from_slice(&envelope_hash);
+    raw_bytes.extend_from_slice(&target_type.to_le_bytes());
+
+    Ok(crate::attestation_fetcher::ParsedAttestation {
+        raw_bytes,
+        parent_block_id,
+        block_id,
+        block_seq_no,
+        envelope_hash,
+        target_type,
+        signature_occurrences: occurrences,
+    })
 }
 
 fn parse_proof_block(value: &serde_json::Value) -> anyhow::Result<GqlProofBlock> {

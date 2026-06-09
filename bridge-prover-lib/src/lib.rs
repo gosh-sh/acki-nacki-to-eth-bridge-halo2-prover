@@ -1,6 +1,4 @@
 pub mod gql_client;
-pub mod boc_parser;
-pub mod block_data_parser;
 pub mod attestation_fetcher;
 pub mod bk_set_fetcher;
 pub mod poseidon;
