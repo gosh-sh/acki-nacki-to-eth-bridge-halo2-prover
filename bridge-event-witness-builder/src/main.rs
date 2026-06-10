@@ -2,7 +2,7 @@
 //!
 //! Reads a *partial* `PrivateWitness` JSON (the one produced by
 //! `bridge-event-private-witness-export` — see Track B), pulls the
-//! daemon-side data it needs from GraphQL + the verifier state file, and
+//! daemon-side data it needs from GraphQL + the bridge state file, and
 //! writes an *enriched* `PrivateWitness` JSON that `bridge-event-prove
 //! --fixture` (Track D3) can consume to generate a real Circuit 4 proof.
 //!
@@ -49,7 +49,7 @@
 //! ```text
 //! bridge-event-witness-builder
 //!   --partial-witness  <path>                  (required)
-//!   --verifier-state   ./state/verifier_state.json
+//!   --state            ./state/prover_state.json
 //!   --gql-endpoint     http://localhost/graphql
 //!   --layer-idx        0                       (L1 only for now)
 //!   --out              <path>                  (required)
@@ -87,14 +87,14 @@ const HISTORY_WINDOW_SIZE: u64 =
 /// so the witness builder uses the same value as the prover daemon.
 const THINNING_FACTOR_P: u64 = bridge_prover_lib::THINNING_FACTOR_P;
 
-const DEFAULT_VERIFIER_STATE: &str = "./state/verifier_state.json";
+const DEFAULT_STATE: &str = "./state/prover_state.json";
 const DEFAULT_GQL_ENDPOINT: &str = "http://localhost/graphql";
 
 /// Top-level CLI args.
 #[derive(Debug)]
 struct CliArgs {
     partial_witness: PathBuf,
-    verifier_state: PathBuf,
+    state: PathBuf,
     gql_endpoint: String,
     layer_idx: u32,
     out: PathBuf,
@@ -104,7 +104,7 @@ impl CliArgs {
     fn parse() -> Result<Self> {
         let mut args = std::env::args().skip(1);
         let mut partial_witness: Option<PathBuf> = None;
-        let mut verifier_state: Option<PathBuf> = None;
+        let mut state: Option<PathBuf> = None;
         let mut gql_endpoint: Option<String> = None;
         let mut layer_idx: u32 = 0;
         let mut out: Option<PathBuf> = None;
@@ -115,9 +115,9 @@ impl CliArgs {
                     let v = args.next().context("--partial-witness needs a path")?;
                     partial_witness = Some(PathBuf::from(v));
                 }
-                "--verifier-state" => {
-                    let v = args.next().context("--verifier-state needs a path")?;
-                    verifier_state = Some(PathBuf::from(v));
+                "--state" => {
+                    let v = args.next().context("--state needs a path")?;
+                    state = Some(PathBuf::from(v));
                 }
                 "--gql-endpoint" => {
                     let v = args.next().context("--gql-endpoint needs a URL")?;
@@ -145,7 +145,7 @@ impl CliArgs {
 
         Ok(Self {
             partial_witness,
-            verifier_state: verifier_state.unwrap_or_else(|| PathBuf::from(DEFAULT_VERIFIER_STATE)),
+            state: state.unwrap_or_else(|| PathBuf::from(DEFAULT_STATE)),
             gql_endpoint: gql_endpoint.unwrap_or_else(|| DEFAULT_GQL_ENDPOINT.to_string()),
             layer_idx,
             out,
@@ -157,12 +157,12 @@ fn print_help() {
     eprintln!(
         "Usage: bridge-event-witness-builder \
          --partial-witness <path> --out <path> \
-         [--verifier-state <path>] [--gql-endpoint <url>] [--layer-idx <u32>]"
+         [--state <path>] [--gql-endpoint <url>] [--layer-idx <u32>]"
     );
     eprintln!();
     eprintln!("  --partial-witness <path>  PrivateWitness JSON from bridge-event-private-witness-export.");
     eprintln!("  --out <path>              Output path for the enriched PrivateWitness JSON.");
-    eprintln!("  --verifier-state <path>   Default: {}", DEFAULT_VERIFIER_STATE);
+    eprintln!("  --state <path>            BridgeState JSON path. Default: {}", DEFAULT_STATE);
     eprintln!("  --gql-endpoint <url>      Default: {}", DEFAULT_GQL_ENDPOINT);
     eprintln!("  --layer-idx <u32>         Anchor layer (0 = L1). Only 0 supported in this cut.");
     eprintln!();
@@ -216,7 +216,7 @@ async fn run() -> Result<()> {
     let args = CliArgs::parse()?;
     info!("=== bridge-event-witness-builder ===");
     info!("partial_witness: {}", args.partial_witness.display());
-    info!("verifier_state:  {}", args.verifier_state.display());
+    info!("state:           {}", args.state.display());
     info!("gql_endpoint:    {}", args.gql_endpoint);
     info!("layer_idx:       {} (only 0 supported for now)", args.layer_idx);
     info!("out:             {}", args.out.display());
@@ -259,18 +259,18 @@ async fn run() -> Result<()> {
         event_seq,
     );
 
-    // ---- Load verifier state --------------------------------------------
-    let state_path_str = args.verifier_state.to_string_lossy().into_owned();
+    // ---- Load bridge state ----------------------------------------------
+    let state_path_str = args.state.to_string_lossy().into_owned();
     let state = BridgeState::load(&state_path_str, HISTORY_WINDOW_SIZE as usize)
-        .with_context(|| format!("failed to load {}", args.verifier_state.display()))?;
+        .with_context(|| format!("failed to load {}", args.state.display()))?;
     if !state.initialized {
         bail!(
-            "verifier state at {} is uninitialized — the verifier hasn't processed any key blocks yet",
-            args.verifier_state.display()
+            "bridge state at {} is uninitialized — no key blocks processed yet",
+            args.state.display()
         );
     }
     info!(
-        "verifier state: window_size={}, active_layers={}, last_seen_seq_no={}, last_seen_height={}",
+        "bridge state: window_size={}, active_layers={}, last_seen_seq_no={}, last_seen_height={}",
         state.window_size,
         state.num_active_layers(),
         state.stored_last_seen_block_seq_no,

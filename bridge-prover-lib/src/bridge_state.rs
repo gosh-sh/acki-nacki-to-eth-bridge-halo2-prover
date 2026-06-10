@@ -17,6 +17,7 @@
 //! scanning, and so `flatten_layer_hashes` can stream slots in chronological
 //! order even before the window fills.
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use anyhow::Context;
@@ -24,6 +25,29 @@ use serde::{Deserialize, Serialize};
 
 /// Layers are 1-indexed (1..=MAX_LAYERS); slot 0 of `layer_windows` is layer 1.
 pub const MAX_LAYERS: usize = 10;
+
+/// Cap on the `BridgeState::recent_bundles` ring. Keeps the state file small
+/// while preserving enough history for an orchestrator to confirm a recent
+/// run of self-verified bundles.
+pub const RECENT_BUNDLES_CAP: usize = 16;
+
+/// Per-bundle self-verification outcome recorded by `bridge-prover-daemon`
+/// after it generates and locally verifies its own Circuit 1a + Circuit 2
+/// proofs. Surfaced via `prover_state.json` so an external orchestrator can
+/// poll it without launching a verifier daemon.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BundleResult {
+    /// Thinned key block seq_no this result is for.
+    pub key_block_seq_no: u64,
+    /// Circuit 1a self-verify passed.
+    pub primary_ok: bool,
+    /// Circuit 2 self-verify passed.
+    pub layer_ok: bool,
+    /// Convenience: `primary_ok && layer_ok`.
+    pub verify_ok: bool,
+    /// Unix epoch seconds when the result was recorded.
+    pub ts_unix: u64,
+}
 
 /// Per-layer rolling window. `data.len() == heights.len() == window_size`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -118,9 +142,15 @@ pub struct BridgeState {
     /// Schema version (bumped from v1's flat `Vec<LayerHashEntry>` shape).
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
+    /// Ring of the most recent `RECENT_BUNDLES_CAP` self-verification outcomes
+    /// (oldest at front, newest at back). Written by `bridge-prover-daemon`
+    /// after each Circuit 1a + Circuit 2 generation cycle. Empty on schema v2
+    /// state files thanks to `#[serde(default)]`.
+    #[serde(default)]
+    pub recent_bundles: VecDeque<BundleResult>,
 }
 
-fn default_schema_version() -> u32 { 2 }
+fn default_schema_version() -> u32 { 3 }
 
 impl BridgeState {
     /// Create an uninitialized state with `MAX_LAYERS` zero windows of the
@@ -133,8 +163,18 @@ impl BridgeState {
             stored_last_seen_block_seq_no: 0,
             stored_last_seen_block_height: 0,
             initialized: false,
-            schema_version: 2,
+            schema_version: 3,
+            recent_bundles: VecDeque::new(),
         }
+    }
+
+    /// Push a `BundleResult` onto the recent-bundles ring, evicting the
+    /// oldest entry once the cap is exceeded.
+    pub fn push_bundle_result(&mut self, r: BundleResult) {
+        if self.recent_bundles.len() >= RECENT_BUNDLES_CAP {
+            self.recent_bundles.pop_front();
+        }
+        self.recent_bundles.push_back(r);
     }
 
     /// Borrow the window for layer `L` (1-indexed).
