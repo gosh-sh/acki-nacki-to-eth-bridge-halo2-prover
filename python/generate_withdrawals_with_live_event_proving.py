@@ -27,7 +27,9 @@ $WORK_DIR on failure.
 
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import time
 
@@ -220,6 +222,79 @@ def mint_usdc(msig_address_legacy: str, amount: int):
     )
 
 
+# ── Local-devnet bk_set materialization ───────────────────────────────────────
+
+def materialize_bk_set_from_node_config():
+    """Regenerate `<PROVER_DIR>/bk_set.json` from the running local cluster's
+    BLS key files. Daemon-side `bridge_prover_lib::bk_set_fetcher` tries the
+    GraphQL `bkSetUpdates` stream first; on a fresh devnet (zero validator
+    churn since genesis) that stream returns empty and the daemon falls back
+    to `./bk_set.json` (relative to its cwd, which is `PROVER_DIR`).
+
+    For ad-hoc local runs we cannot rely on a committed `bk_set.json` snapshot
+    — node images may regenerate BLS keys when rebuilt from scratch. Source
+    the set from the same `config/block_keeperN_bls.keys.json` files the node
+    containers boot with, enumerated by the running `*-nodeN-*` containers so
+    we don't hard-code the topology size.
+
+    Mirrors `acki-nacki/tests/exchange/bridge_e2e_self_contained.py`'s
+    function of the same name. Shellnet path uses GraphQL only — never call
+    this when `MODE=shellnet`.
+
+    `ACKI_NACKI_ROOT` env var overrides the default sibling path.
+    """
+    acki_nacki_root = os.environ.get(
+        "ACKI_NACKI_ROOT",
+        os.path.abspath(os.path.join(PROVER_DIR, "..", "acki-nacki")),
+    )
+    config_dir = os.path.join(acki_nacki_root, "config")
+    try:
+        names = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        raise RuntimeError(
+            f"failed to enumerate docker containers: {e}. "
+            "the local devnet cluster must be running before this test"
+        ) from e
+
+    pat = re.compile(r"-node(\d+)-\d+$")
+    indices = sorted({
+        int(m.group(1))
+        for line in names.splitlines()
+        for m in [pat.search(line.strip())]
+        if m
+    })
+    if not indices:
+        raise RuntimeError(
+            "no `*-nodeN-*` containers detected via `docker ps`; "
+            "start the cluster (e.g. `make run`) before this test"
+        )
+
+    bk_set = {}
+    for idx in indices:
+        path = os.path.join(config_dir, f"block_keeper{idx}_bls.keys.json")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                f"BLS key file missing: {path} (needed for node{idx})"
+            )
+        with open(path) as f:
+            data = json.load(f)
+        try:
+            pub = data[0]["public"]
+        except (IndexError, KeyError, TypeError) as e:
+            raise ValueError(f"unexpected format in {path}: {e}") from e
+        bk_set[str(idx)] = pub
+
+    out_path = os.path.join(PROVER_DIR, "bk_set.json")
+    with open(out_path, "w") as f:
+        json.dump(bk_set, f, indent=2)
+    tracer.log(f"  bk_set.json: {len(bk_set)} signers (indices {indices}) "
+               f"sourced from {config_dir}")
+    tracer.log(f"  wrote {out_path}")
+
+
 # ── Driver ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -246,6 +321,10 @@ def main():
     assert common.is_account_active(USDC_BRIDGE_ADDRESS), \
         f"USDCBridge not active at {USDC_BRIDGE_ADDRESS}"
     tracer.log(f"  USDCBridge active at {USDC_BRIDGE_ADDRESS}")
+
+    if not IS_SHELLNET:
+        tracer.log_phase("Materializing bk_set.json from local cluster config")
+        materialize_bk_set_from_node_config()
 
     baseline = gql.fetch_bridge_extouts(limit=500)
     baseline_ids = {n["id"] for n in baseline}
