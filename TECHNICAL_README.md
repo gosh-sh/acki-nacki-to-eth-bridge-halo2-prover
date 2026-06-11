@@ -20,9 +20,9 @@ Theory, circuit witnesses, contract sketch: see [`acki-nacki-to-eth-bridge-halo2
 | Network | What can be exercised |
 |---|---|
 | **Local devnet** (`make run` of `acki-nacki/`, GQL at `http://localhost/graphql`) | **Full E2E** — Circuits 1A + 2 (bundle proving) **and** Circuit 4 (per-event proving via the Python orchestrator). |
-| **Shellnet** (`https://shellnet.ackinacki.org/graphql`) | **Circuits 1A + 2 only** — bundle proving, no event proving. |
+| **Shellnet** (`https://shellnet.ackinacki.org/graphql`) | **Full E2E** — same circuits, same orchestrator, selected via `MODE=shellnet`. |
 
-Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; no `if shellnet` branches in code.
+Same binaries for both networks. Endpoint switched via `BRIDGE_GQL_ENDPOINT`; the orchestrator selects per-network parameters via `MODE` (local | shellnet).
 
 ---
 
@@ -314,24 +314,36 @@ Same as Steps 1–4 of the local-devnet runbook with two adjustments:
 
 **Run**
 
+The orchestrator is a single script driven by `MODE` (`local` (default) | `shellnet`); MODE selects per-network defaults (`NETWORK`, `GRAPHQL_URL`, `WORK_DIR`, USDC-bridge owner key path, timeouts, GQL User-Agent).
+
+**Local devnet** (default):
 ```bash
 cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
 # defaults: NETWORK=http://127.0.0.1:80, GRAPHQL_URL=http://localhost/graphql,
-#          PROVER_DIR=<this repo>, WORK_DIR=/tmp/bridge-e2e
+#          PROVER_DIR=<this repo>, WORK_DIR=<repo>/work-local
 python3 python/generate_withdrawals_with_live_event_proving.py
 ```
 
-Other targets (shellnet etc.) — set `NETWORK` + `GRAPHQL_URL`:
+**Shellnet** — set `MODE=shellnet` and the matching `BRIDGE_GQL_ENDPOINT` on the daemons (Step 4 of the local runbook → use `BRIDGE_GQL_ENDPOINT="https://shellnet.ackinacki.org/graphql" scripts/run-bridge-test.sh`):
 
 ```bash
-NETWORK=shellnet.ackinacki.org \
-GRAPHQL_URL=https://shellnet.ackinacki.org/graphql \
-python3 python/generate_withdrawals_with_live_event_proving.py
+MODE=shellnet \
+BRIDGE_GQL_ENDPOINT="https://shellnet.ackinacki.org/graphql" \
+    python3 python/generate_withdrawals_with_live_event_proving.py
 ```
 
-Override knobs (all optional): `CLI_NAME` (use a different `tvm-cli`), `PROVER_DIR` (release binaries + `state/` + `proofs/` location), `WORK_DIR` (scratch dir for `partial.json` / `witness.json` / generated multisig keypair).
+`MODE=shellnet` defaults: `NETWORK=shellnet.ackinacki.org`, `GRAPHQL_URL=https://shellnet.ackinacki.org/graphql`, `WORK_DIR=<repo>/work-shellnet`, bridge-owner key from `python/contracts/USDCBridge.shellnet.keys.json`, custom GQL User-Agent (the shellnet reverse proxy rejects default `urllib`), longer timeouts. Override any of `NETWORK` / `GRAPHQL_URL` / `WORK_DIR` / `CLI_NAME` / `PROVER_DIR` to deviate.
+
+Wall-clock on a fresh start against shellnet: **~10 min** end-to-end (daemon bootstrap + first bundle ~5 min, event capture + verifier catch-up to next bundle ~4 min, Circuit 4 prove ~3 min). The orchestrator deploys a fresh multisig funded by `GiverV3` (canonical 10 NACKL + 100T ECC[2]), mints ECC[3] (USDC) via `USDCBridge.mintAndSend` signed by the bundled bridge-owner key, fires `TokenBridge.initiateWithdrawal`, and chains the three event binaries once the verifier has crossed the event's anchor.
 
 Phases printed are identical to Step 5 of the local-devnet runbook; exit code 0 only if the daemon's `result.json` shows `verified && anchor_matched && proof_valid`.
+
+**Shellnet-specific gotchas:**
+- `COMPUTE_SKIPPED: empty balance` during multisig deploy — faucet amounts in the orchestrator are canonical (`acki-nacki/tests/test_multisig.py`); do not shrink them.
+- `Resource not found` polling the multisig — the multisig has its own dapp_id, so its address is the self-dapp `acc::acc` form, not `0:acc` or zero-dapp. The orchestrator already uses self-dapp; preserve that in extensions.
+- `403` from `https://shellnet.ackinacki.org/graphql` — the reverse proxy rejects the default Python `urllib` User-Agent. The orchestrator overrides it; custom GQL callers must do the same.
+- Verifier never reaches the event's anchor seq_no — almost always means the seed sits far behind chain head. Wipe + restart (`stop-bridge-test.sh` → `run-bridge-test.sh`) so auto-seed re-anchors at the next `W·P` boundary past current head.
+- `BRIDGE_BOOTSTRAP_SEQNO must be a multiple of 512` — explicit seeds must be `W·P`-aligned; drop the override or pick a valid boundary (`echo $((N - N % 512))`).
 
 ---
 
