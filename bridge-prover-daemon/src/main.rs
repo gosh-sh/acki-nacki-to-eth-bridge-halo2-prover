@@ -7,16 +7,29 @@
 //! 4. For each subsequent key block:
 //!    a. Fetch attestation → generate Circuit 1a proof
 //!    b. Build layer hashes preimage + chain proofs → generate Circuit 2 proof
-//!    c. **Locally verify both proofs** (no external verifier daemon)
-//!    d. Record the (primary_ok, layer_ok, verify_ok) outcome in
-//!       `BridgeState::recent_bundles` and persist `prover_state.json`
-//!    e. On either verify failing: log diagnostics and exit non-zero — the
-//!       state is NOT advanced past the failed bundle, so a restart will
-//!       reprocess from the last good seq_no.
+//!    c. Write the combined proof JSON to `proofs/proof_NNN.json`
+//!    d. Verify the bundle via one of two paths:
 //!
-//! The combined Circuit 1a + Circuit 2 proof JSON is still written under
-//! `proofs/` for downstream consumers, but no separate verifier process is
-//! required.
+//! ## Verification modes (Cargo features)
+//!
+//! ### Default — paired with `bridge-verifier-daemon` (no extra feature)
+//!
+//! The prover writes `proofs/proof_NNN.json` and **waits** for the verifier
+//! daemon to drop `proofs/result_NNN.json` (`ipc::wait_for_result`). The
+//! verifier owns its own `state/verifier_state.json`. Used by the standard
+//! E2E orchestrator (`python/generate_withdrawals_with_live_event_proving.py`).
+//!
+//! ### `--features self-verify` — standalone (no verifier daemon)
+//!
+//! The prover inline-verifies both proofs itself, records the
+//! `(primary_ok, layer_ok, verify_ok)` outcome in
+//! `BridgeState::recent_bundles` and persists `prover_state.json`. On a
+//! verify failure it logs diagnostics and exits non-zero with the state
+//! NOT advanced past the failed bundle, so a restart reprocesses from the
+//! last good seq_no. Used by the CI smoke test (`bridge_e2e_self_contained.py`).
+//!
+//! In both modes the combined Circuit 1a + Circuit 2 proof JSON is written
+//! under `proofs/` for downstream consumers (Circuit 4 orchestrator, archival).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,14 +46,18 @@ use halo2_base::halo2_proofs::halo2curves::group::ff::PrimeField;
 
 use bridge_prover_lib::attestation_fetcher;
 use bridge_prover_lib::bootstrap::{self, BootstrapSeed};
-use bridge_prover_lib::bridge_state::{BridgeState, BundleResult};
+use bridge_prover_lib::bridge_state::BridgeState;
+#[cfg(feature = "self-verify")]
+use bridge_prover_lib::bridge_state::BundleResult;
 use bridge_prover_lib::gql_client::{self, GqlClient};
 use bridge_prover_lib::ipc;
 use bridge_prover_lib::keys::KeyManager;
 use bridge_prover_lib::layer_prover;
+#[cfg(feature = "self-verify")]
 use bridge_prover_lib::layer_verifier;
 use bridge_prover_lib::poseidon;
 use bridge_prover_lib::prover;
+#[cfg(feature = "self-verify")]
 use bridge_prover_lib::verifier;
 
 /// Default GraphQL endpoint when `BRIDGE_GQL_ENDPOINT` is not set. Targets a
@@ -67,6 +84,11 @@ const HISTORY_WINDOW_SIZE: u64 =
 const STATS_LOG_INTERVAL: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 const SLEEP_ON_RETRY: Duration = Duration::from_secs(5);
+/// How long to wait for the external verifier daemon to drop
+/// `proofs/result_NNN.json` before declaring a verifier-side timeout.
+/// Paired mode only.
+#[cfg(not(feature = "self-verify"))]
+const VERIFIER_TIMEOUT: Duration = Duration::from_secs(300);
 const PARAMS_DIR: &str = "./params";
 const LOGS_DIR: &str = "./logs";
 const STATE_FILE: &str = "./state/prover_state.json";
@@ -446,85 +468,120 @@ async fn main() -> anyhow::Result<()> {
         };
         ipc::write_combined_proof(&request)?;
 
-        // ---- Self-verify both proofs locally ----
+        // ---- Verification: feature-gated ------------------------------------
         //
-        // Public-instance order matches what the verifier daemon used to
-        // build (bridge-verifier-daemon/src/main.rs §"Verify Circuit 1a/2");
-        // any divergence here would cause a false-negative verify.
-        let primary_instances = vec![
-            primary_proof.block_id_fr,
-            bk_set_commitment,
-            Fr::from(target_seqno),
-            Fr::from(state.stored_last_seen_block_seq_no),
-        ];
-        let t_verify_primary = Instant::now();
-        let primary_ok = verifier::verify_primary_proof(
-            &key_manager,
-            &primary_proof.proof_bytes,
-            &primary_instances,
-        );
-        info!(
-            "key block {}: Circuit 1a self-verify {} ({:?})",
-            target_seqno,
-            if primary_ok { "OK" } else { "FAIL" },
-            t_verify_primary.elapsed()
-        );
-
-        // Circuit 2 public instances: [block_id, bk_set_hash, num_layers,
-        // layer_hash_frs[0..10], prev_max_level_layer_hash] — 14 elements.
-        let mut layer_instances = Vec::with_capacity(14);
-        layer_instances.push(layer_proof.block_id_fr);
-        layer_instances.push(layer_proof.bk_set_poseidon_hash_fr);
-        layer_instances.push(Fr::from(layer_proof.num_layers as u64));
-        for fr in &layer_proof.layer_hash_frs {
-            layer_instances.push(*fr);
+        // Paired mode (default, no extra feature): write the proof and wait
+        // for the verifier daemon to ACK via `proofs/result_NNN.json`.
+        //
+        // Standalone mode (`--features self-verify`): inline-verify both
+        // proofs in-process, record the verdict to
+        // `BridgeState::recent_bundles`, abort the daemon on failure.
+        #[cfg(not(feature = "self-verify"))]
+        {
+            info!("key block {}: proof written, waiting for verifier...", target_seqno);
+            match ipc::wait_for_result(target_seqno as u32, VERIFIER_TIMEOUT).await {
+                Ok(result) => {
+                    if result.primary_verified && result.layer_verified {
+                        info!("key block {}: BOTH VERIFIED OK", target_seqno);
+                        stats.verification_ok += 1;
+                    } else {
+                        error!(
+                            "key block {}: VERIFICATION FAILED: primary={}, layer={}, err={:?}",
+                            target_seqno,
+                            result.primary_verified,
+                            result.layer_verified,
+                            result.error,
+                        );
+                        stats.verification_failed += 1;
+                    }
+                }
+                Err(e) => {
+                    error!("key block {}: verifier timeout/error: {}", target_seqno, e);
+                    stats.verification_failed += 1;
+                }
+            }
         }
-        layer_instances.push(layer_proof.prev_max_level_layer_hash_fr);
-        let t_verify_layer = Instant::now();
-        let layer_ok = layer_verifier::verify_layer_proof(
-            &key_manager,
-            &layer_proof.proof_bytes,
-            &layer_instances,
-        );
-        info!(
-            "key block {}: Circuit 2 self-verify {} ({:?})",
-            target_seqno,
-            if layer_ok { "OK" } else { "FAIL" },
-            t_verify_layer.elapsed()
-        );
 
-        let verify_ok = primary_ok && layer_ok;
-        let ts_unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        state.push_bundle_result(BundleResult {
-            key_block_seq_no: target_seqno,
-            primary_ok,
-            layer_ok,
-            verify_ok,
-            ts_unix,
-        });
-
-        if !verify_ok {
-            // Persist the failure marker, then abort. We deliberately do NOT
-            // advance `stored_last_seen_*` here: a restart will reprocess this
-            // key block from the last good cursor, and any external orchestrator
-            // polling `recent_bundles` will see the verify_ok=false entry.
-            // Stats are intentionally not incremented — `bail!` propagates
-            // back to `main()` and the summary print at the end never runs.
-            state.save(STATE_FILE)?;
-            anyhow::bail!(
-                "key block {}: self-verification FAILED (primary_ok={}, layer_ok={}); \
-                 state NOT advanced past failed bundle",
-                target_seqno,
-                primary_ok,
-                layer_ok
+        #[cfg(feature = "self-verify")]
+        {
+            // Public-instance order matches what the verifier daemon would
+            // build (bridge-verifier-daemon/src/main.rs §"Verify Circuit 1a/2");
+            // any divergence here would cause a false-negative verify.
+            let primary_instances = vec![
+                primary_proof.block_id_fr,
+                bk_set_commitment,
+                Fr::from(target_seqno),
+                Fr::from(state.stored_last_seen_block_seq_no),
+            ];
+            let t_verify_primary = Instant::now();
+            let primary_ok = verifier::verify_primary_proof(
+                &key_manager,
+                &primary_proof.proof_bytes,
+                &primary_instances,
             );
-        }
+            info!(
+                "key block {}: Circuit 1a self-verify {} ({:?})",
+                target_seqno,
+                if primary_ok { "OK" } else { "FAIL" },
+                t_verify_primary.elapsed()
+            );
 
-        info!("key block {}: BOTH SELF-VERIFIED OK", target_seqno);
-        stats.verification_ok += 1;
+            // Circuit 2 public instances: [block_id, bk_set_hash, num_layers,
+            // layer_hash_frs[0..10], prev_max_level_layer_hash] — 14 elements.
+            let mut layer_instances = Vec::with_capacity(14);
+            layer_instances.push(layer_proof.block_id_fr);
+            layer_instances.push(layer_proof.bk_set_poseidon_hash_fr);
+            layer_instances.push(Fr::from(layer_proof.num_layers as u64));
+            for fr in &layer_proof.layer_hash_frs {
+                layer_instances.push(*fr);
+            }
+            layer_instances.push(layer_proof.prev_max_level_layer_hash_fr);
+            let t_verify_layer = Instant::now();
+            let layer_ok = layer_verifier::verify_layer_proof(
+                &key_manager,
+                &layer_proof.proof_bytes,
+                &layer_instances,
+            );
+            info!(
+                "key block {}: Circuit 2 self-verify {} ({:?})",
+                target_seqno,
+                if layer_ok { "OK" } else { "FAIL" },
+                t_verify_layer.elapsed()
+            );
+
+            let verify_ok = primary_ok && layer_ok;
+            let ts_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            state.push_bundle_result(BundleResult {
+                key_block_seq_no: target_seqno,
+                primary_ok,
+                layer_ok,
+                verify_ok,
+                ts_unix,
+            });
+
+            if !verify_ok {
+                // Persist the failure marker, then abort. We deliberately do NOT
+                // advance `stored_last_seen_*` here: a restart will reprocess this
+                // key block from the last good cursor, and any external orchestrator
+                // polling `recent_bundles` will see the verify_ok=false entry.
+                // Stats are intentionally not incremented — `bail!` propagates
+                // back to `main()` and the summary print at the end never runs.
+                state.save(STATE_FILE)?;
+                anyhow::bail!(
+                    "key block {}: self-verification FAILED (primary_ok={}, layer_ok={}); \
+                     state NOT advanced past failed bundle",
+                    target_seqno,
+                    primary_ok,
+                    layer_ok
+                );
+            }
+
+            info!("key block {}: BOTH SELF-VERIFIED OK", target_seqno);
+            stats.verification_ok += 1;
+        }
 
         // Advance state with the REAL layer hashes + block_height captured
         // above. Reached only when both proofs self-verified.

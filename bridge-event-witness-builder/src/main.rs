@@ -87,6 +87,17 @@ const HISTORY_WINDOW_SIZE: u64 =
 /// so the witness builder uses the same value as the prover daemon.
 const THINNING_FACTOR_P: u64 = bridge_prover_lib::THINNING_FACTOR_P;
 
+/// Default path of the bridge-state JSON file the witness builder reads.
+///
+/// We default to `prover_state.json` because the standalone CI orchestrator
+/// (`bridge_e2e_self_contained.py`) runs without a verifier daemon and only
+/// has the prover's state on disk. The paired-mode orchestrator
+/// (`generate_withdrawals_with_live_event_proving.py`) overrides this with
+/// `--state ./state/verifier_state.json` — the two files store the same
+/// information for the fields the witness builder consumes
+/// (`layer_windows`, `heights`, `stored_last_seen_*`, `initialized`),
+/// so picking one over the other is a question of which daemon is the
+/// authority in the running configuration, not of content.
 const DEFAULT_STATE: &str = "./state/prover_state.json";
 const DEFAULT_GQL_ENDPOINT: &str = "http://localhost/graphql";
 
@@ -94,7 +105,7 @@ const DEFAULT_GQL_ENDPOINT: &str = "http://localhost/graphql";
 #[derive(Debug)]
 struct CliArgs {
     partial_witness: PathBuf,
-    state: PathBuf,
+    bridge_state: PathBuf,
     gql_endpoint: String,
     layer_idx: u32,
     out: PathBuf,
@@ -104,7 +115,7 @@ impl CliArgs {
     fn parse() -> Result<Self> {
         let mut args = std::env::args().skip(1);
         let mut partial_witness: Option<PathBuf> = None;
-        let mut state: Option<PathBuf> = None;
+        let mut bridge_state: Option<PathBuf> = None;
         let mut gql_endpoint: Option<String> = None;
         let mut layer_idx: u32 = 0;
         let mut out: Option<PathBuf> = None;
@@ -117,7 +128,7 @@ impl CliArgs {
                 }
                 "--state" => {
                     let v = args.next().context("--state needs a path")?;
-                    state = Some(PathBuf::from(v));
+                    bridge_state = Some(PathBuf::from(v));
                 }
                 "--gql-endpoint" => {
                     let v = args.next().context("--gql-endpoint needs a URL")?;
@@ -145,7 +156,7 @@ impl CliArgs {
 
         Ok(Self {
             partial_witness,
-            state: state.unwrap_or_else(|| PathBuf::from(DEFAULT_STATE)),
+            bridge_state: bridge_state.unwrap_or_else(|| PathBuf::from(DEFAULT_STATE)),
             gql_endpoint: gql_endpoint.unwrap_or_else(|| DEFAULT_GQL_ENDPOINT.to_string()),
             layer_idx,
             out,
@@ -216,7 +227,7 @@ async fn run() -> Result<()> {
     let args = CliArgs::parse()?;
     info!("=== bridge-event-witness-builder ===");
     info!("partial_witness: {}", args.partial_witness.display());
-    info!("state:           {}", args.state.display());
+    info!("bridge_state:    {}", args.bridge_state.display());
     info!("gql_endpoint:    {}", args.gql_endpoint);
     info!("layer_idx:       {} (only 0 supported for now)", args.layer_idx);
     info!("out:             {}", args.out.display());
@@ -260,21 +271,21 @@ async fn run() -> Result<()> {
     );
 
     // ---- Load bridge state ----------------------------------------------
-    let state_path_str = args.state.to_string_lossy().into_owned();
-    let state = BridgeState::load(&state_path_str, HISTORY_WINDOW_SIZE as usize)
-        .with_context(|| format!("failed to load {}", args.state.display()))?;
-    if !state.initialized {
+    let bridge_state_path_str = args.bridge_state.to_string_lossy().into_owned();
+    let bridge_state = BridgeState::load(&bridge_state_path_str, HISTORY_WINDOW_SIZE as usize)
+        .with_context(|| format!("failed to load {}", args.bridge_state.display()))?;
+    if !bridge_state.initialized {
         bail!(
             "bridge state at {} is uninitialized — no key blocks processed yet",
-            args.state.display()
+            args.bridge_state.display()
         );
     }
     info!(
         "bridge state: window_size={}, active_layers={}, last_seen_seq_no={}, last_seen_height={}",
-        state.window_size,
-        state.num_active_layers(),
-        state.stored_last_seen_block_seq_no,
-        state.stored_last_seen_block_height,
+        bridge_state.window_size,
+        bridge_state.num_active_layers(),
+        bridge_state.stored_last_seen_block_seq_no,
+        bridge_state.stored_last_seen_block_height,
     );
 
     // ---- Connect to GraphQL --------------------------------------------
@@ -359,7 +370,7 @@ async fn run() -> Result<()> {
         key_block_seq, key_block_height
     );
 
-    let l1_slot = state.slot_for_event_height(1, key_block_height).ok_or_else(|| {
+    let l1_slot = bridge_state.slot_for_event_height(1, key_block_height).ok_or_else(|| {
         // TODO(L1→L5 escalation): when the key block's height has rolled
         // out of layer 1's rolling window, escalate to L2/L3/... rather
         // than failing.
@@ -368,7 +379,7 @@ async fn run() -> Result<()> {
              — block has rolled out of the L1 rolling window. \
              L1→L5 escalation not yet implemented (see TODO in src/main.rs).",
             key_block_height,
-            state.layer_windows[0]
+            bridge_state.layer_windows[0]
                 .iter_chronological()
                 .map(|(_, h)| h)
                 .collect::<Vec<_>>(),
@@ -380,7 +391,7 @@ async fn run() -> Result<()> {
     // checks this value off-circuit against its mirror of `layer_windows`,
     // so we only need to pick the chosen layer hash here (no flattened
     // candidate vector, no choice index).
-    let chosen_layer_hash = state.layer_windows[0]
+    let chosen_layer_hash = bridge_state.layer_windows[0]
         .iter_chronological()
         .nth(l1_slot)
         .map(|(h, _)| h)
