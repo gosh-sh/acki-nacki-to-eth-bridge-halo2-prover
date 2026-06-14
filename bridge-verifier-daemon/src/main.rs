@@ -569,17 +569,14 @@ fn write_failure(seq_no: u32, error: &str) {
 //    sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root]
 // The 9 leading slots are bound to the proof by the circuit. The last
 // slot, `final_root`, is the single Poseidon root the prover committed to;
-// the *anonymity set* (which layer hash that root corresponds to) is no
-// longer in-circuit since the `circuit4-single-final-root` migration.
+
 //
 // Acceptance gate: the daemon does an off-circuit membership check —
 // `final_root` must appear somewhere in the daemon's currently mirrored
-// `state.flatten_layer_hashes()` (= `MAX_LAYERS × W` = 10 × W entries,
-// where `W = state.window_size`; 1280 in production with W=128, 80 in the
-// W=8 test config — so "80 layer hashes" is only true for that test
-// config). This mirrors the contract sketch in
-// `acki-nacki-to-eth-bridge-halo2-circuits/README.md` lines 810-853
-// (`submitWithdrawalProof`).
+// `state.flatten_layer_hashes()` (= `MAX_LAYERS × W` = 10 × 128 = 1280
+// entries, where `W = HISTORY_PROOF_WINDOW_SIZE`). This mirrors the
+// contract sketch in `acki-nacki-to-eth-bridge-halo2-circuits/README.md`
+// lines 810-853 (`submitWithdrawalProof`).
 //
 // TBD: the daemon does not yet enforce a `proven[]` map against the
 // `nullifier` slot (replay protection), and `recipient_{hi,lo}` are not
