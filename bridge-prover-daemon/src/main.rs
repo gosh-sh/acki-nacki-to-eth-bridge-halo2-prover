@@ -701,11 +701,27 @@ async fn generate_layer_proof_for_key_block(
         hex::encode(tree.block_id())
     );
 
-    // 3. BK set Poseidon hash — comes from the loaded BLS pubkeys. NOT from
-    // `leaves[2]`: that leaf is a *SHA-256* hash of the old bk_set (used to
-    // commit the BK rotation in the block_id Merkle tree), which is a
-    // different commitment than the Poseidon hash Circuit 1a's BLS message
-    // hash is built over.
+    // 3. BK set Poseidon hash — comes from the loaded BLS pubkeys.
+    //
+    // The node computes `leaves[2]` (old bk_set) and `leaves[3]` (new bk_set)
+    // as Poseidon commitments using the same scheme as
+    // `bridge_prover_lib::poseidon::compute_bk_set_poseidon` (see
+    // `acki-nacki/node/src/block_keeper_system/mod.rs::poseidon_commitment`).
+    // So `leaves[2]` must equal `bk_set_commitment.to_repr()` — assert this
+    // as a fail-fast check on `bk_set.json` freshness. Without it, a stale
+    // BK set silently produces a bogus BLS message hash and only blows up
+    // deep inside Circuit 1A's pairing constraints.
+    let bk_hash_bytes: [u8; 32] = bk_set_commitment.to_repr();
+    if bk_hash_bytes != leaves[2] {
+        anyhow::bail!(
+            "loaded BK set Poseidon commitment ({}) does not match block.leaves[2] ({}) — \
+             bk_set.json is stale or the chain rotated keys; refresh bk_set.json",
+            hex::encode(bk_hash_bytes),
+            hex::encode(leaves[2])
+        );
+    }
+    // Note: `leaves[3]` (new bk_set Poseidon commitment) is not checked here
+    // because the prover does not currently load the future bk_set.
     let bk_set_hash_fr = *bk_set_commitment;
 
     // 4. Build history_proofs map (already in block.history_proofs).

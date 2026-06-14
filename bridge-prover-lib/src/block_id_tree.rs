@@ -21,22 +21,22 @@
 //! - L4: tvm_block_repr_hash
 //! - L5: SHA-256(durable_state_bytes)
 //! - L6: SHA-256(tx_cnt as u64 big-endian)
-//! - L7: [0u8; 32]
+//! - L7: Poseidon Merkle root of referenced blocks (see
+//!       `acki-nacki/node/src/types/ackinacki_block/mod.rs::block_merkle_leaves`)
 
 use sha2::{Digest, Sha256};
+
+// Note: at runtime the prover never recomputes the full 8-leaf tree from its
+// components — the node ships the 8 leaves directly via the GraphQL field
+// `block_merkle_tree_leaves`, and we only reconstruct the inner SHA-256
+// Merkle hashing via `BlockIdMerkleTree::from_leaves`. The leaf layout above
+// is kept purely as a reference for what the node guarantees.
 
 /// SHA-256(left || right) for Merkle internal nodes.
 fn sha256_combine(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(left);
     hasher.update(right);
-    hasher.finalize().into()
-}
-
-/// SHA-256 of arbitrary bytes.
-fn sha256_hash(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
     hasher.finalize().into()
 }
 
@@ -75,47 +75,6 @@ impl BlockIdMerkleTree {
     pub fn block_id(&self) -> [u8; 32] {
         self.root
     }
-}
-
-/// Compute the full block ID Merkle tree from its components.
-///
-/// Returns the tree with all internal nodes and the block_id (root).
-pub fn compute_block_id_tree(
-    layer_hashes_preimage: &[u8],
-    common_section_bytes: &[u8],
-    old_bk_set_hash: &[u8; 32],
-    new_bk_set_hash: &[u8; 32],
-    tvm_block_repr_hash: &[u8; 32],
-    durable_state_bytes: &[u8],
-    tx_cnt: u64,
-) -> BlockIdMerkleTree {
-    // L0: Poseidon hash of layer_hashes_preimage (331 bytes → 11 Fr chunks → Poseidon)
-    let l0_bytes = bridge_poseidon::poseidon_hash_bytes(layer_hashes_preimage);
-    let mut l0 = [0u8; 32];
-    l0.copy_from_slice(&l0_bytes);
-
-    // L1: SHA-256(common_section_bytes)
-    let l1 = sha256_hash(common_section_bytes);
-
-    // L2: old BK set Poseidon commitment (already 32 bytes)
-    let l2 = *old_bk_set_hash;
-
-    // L3: new BK set Poseidon commitment
-    let l3 = *new_bk_set_hash;
-
-    // L4: TVM block representation hash
-    let l4 = *tvm_block_repr_hash;
-
-    // L5: SHA-256(durable_state_bytes)
-    let l5 = sha256_hash(durable_state_bytes);
-
-    // L6: SHA-256(tx_cnt as u64 big-endian)
-    let l6 = sha256_hash(&tx_cnt.to_be_bytes());
-
-    // L7: zero padding
-    let l7 = [0u8; 32];
-
-    BlockIdMerkleTree::from_leaves([l0, l1, l2, l3, l4, l5, l6, l7])
 }
 
 /// Build a 331-byte layer hashes preimage from layer root hashes.
