@@ -563,19 +563,27 @@ fn write_failure(seq_no: u32, error: &str) {
 // Circuit 4 (event proof) verification
 // =====================================================================
 //
-// The verifier daemon models the future Ethereum bridge contract. It
-// accepts a Circuit 4 proof only if the 80 layer hashes baked into its
-// public instances match the daemon's *current* mirrored
-// `BridgeState.layer_windows[1..=MAX_LAYERS]` byte-for-byte. This is the
-// same check the contract sketch in
+// The verifier daemon models the future Ethereum bridge contract. Circuit 4
+// publishes exactly 10 public instances:
+//   [token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
+//    sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root]
+// The 9 leading slots are bound to the proof by the circuit. The last
+// slot, `final_root`, is the single Poseidon root the prover committed to;
+// the *anonymity set* (which layer hash that root corresponds to) is no
+// longer in-circuit since the `circuit4-single-final-root` migration.
+//
+// Acceptance gate: the daemon does an off-circuit membership check —
+// `final_root` must appear somewhere in the daemon's currently mirrored
+// `state.flatten_layer_hashes()` (= `MAX_LAYERS × W` = 10 × W entries,
+// where `W = state.window_size`; 1280 in production with W=128, 80 in the
+// W=8 test config — so "80 layer hashes" is only true for that test
+// config). This mirrors the contract sketch in
 // `acki-nacki-to-eth-bridge-halo2-circuits/README.md` lines 810-853
-// performs in `submitWithdrawalProof`. The 9 leading slots
-// (`[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
-// sender_acc_fr, dapp_fr, acc_fr, nullifier]`) are bound to the proof
-// by the circuit; the daemon currently does not yet enforce a
-// `proven[]` map against the `nullifier` slot — that, plus recipient
-// binding to the on-chain `msg.sender`, are the remaining post-
-// verification TBD items.
+// (`submitWithdrawalProof`).
+//
+// TBD: the daemon does not yet enforce a `proven[]` map against the
+// `nullifier` slot (replay protection), and `recipient_{hi,lo}` are not
+// yet bound to the on-chain `msg.sender`.
 
 /// On-disk schema for `proof_event_NNNNNN.json` produced by
 /// `bridge-event-prove`. Kept private (`Deserialize`-only) here so the
@@ -605,8 +613,8 @@ struct EventProofResult<'a> {
     seq_no: u32,
     /// Final accept/reject. `verified == anchor_matched && proof_valid`.
     verified: bool,
-    /// Whether the trailing 80 public instances matched the daemon's
-    /// current `flatten_layer_hashes()` snapshot byte-for-byte.
+    /// Whether the proof's `final_root` (public instance slot 9) was found
+    /// in the daemon's current `flatten_layer_hashes()` snapshot.
     anchor_matched: bool,
     /// Whether the halo2 verifier accepted the proof against the event
     /// VK and the supplied public instances. Not run if anchor mismatched.
