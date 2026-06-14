@@ -231,11 +231,8 @@ impl KeyManager {
         // admissible pair would yield the same VK/PK.
         //
         // REF_TREE_DEPTH must match real trees from the node:
-        //   WINDOW=4   →  6 leaves → pad   8 → depth=3
-        //   WINDOW=8   → 10 leaves → pad  16 → depth=4
         //   WINDOW=128 →130 leaves → pad 256 → depth=8
-        // Derived from the shared `HISTORY_PROOF_WINDOW_SIZE` so this stays
-        // in lock-step with the node — see bridge-prover-bugfix/BUG_REPORT.md.
+        // Derived from the shared `HISTORY_PROOF_WINDOW_SIZE` so this stays.
         const REF_NUM_LAYERS: usize = 3;
         const REF_NUM_PREV_CHAIN_STEPS: usize = 2;
         const REF_TREE_DEPTH: usize =

@@ -22,7 +22,7 @@ use bridge_prover_lib::keys::KeyManager;
 ///   `[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
 ///   sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root]`
 ///
-/// Mirror of [`crate::layer_verifier::verify_layer_proof`] — the only
+/// Mirror of `bridge_prover_lib::verifier::verify_layer_proof` — the only
 /// differences are which `KeyManager` VK is used (event VK) and the
 /// instance count, which is checked implicitly by `verify_proof` against
 /// the VK shape.

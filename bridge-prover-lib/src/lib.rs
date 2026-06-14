@@ -14,7 +14,6 @@ pub mod block_id_tree;
 pub mod chain_proof_builder;
 pub mod real_chain_builder;
 pub mod layer_prover;
-pub mod layer_verifier;
 
 // Re-export commonly used types.
 pub use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
@@ -28,6 +27,5 @@ pub use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 ///   * `P` must divide `W = crate::poseidon_dense::HISTORY_PROOF_WINDOW_SIZE`
 ///     so the on-chain `layerWindows[L≥2]` cadence is unchanged.
 ///
-/// Current test config: `W = 8`, `P = 4`. Worst-case chain length is `P = 4` for
-/// any test below layer order 5.
+/// Current test config: `W = 128`, `P = 4`. 
 pub const THINNING_FACTOR_P: u64 = 4;

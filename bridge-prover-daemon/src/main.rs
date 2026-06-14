@@ -53,8 +53,6 @@ use bridge_prover_lib::gql_client::{self, GqlClient};
 use bridge_prover_lib::ipc;
 use bridge_prover_lib::keys::KeyManager;
 use bridge_prover_lib::layer_prover;
-#[cfg(feature = "self-verify")]
-use bridge_prover_lib::layer_verifier;
 use bridge_prover_lib::poseidon;
 use bridge_prover_lib::prover;
 #[cfg(feature = "self-verify")]
@@ -537,7 +535,7 @@ async fn main() -> anyhow::Result<()> {
             }
             layer_instances.push(layer_proof.prev_max_level_layer_hash_fr);
             let t_verify_layer = Instant::now();
-            let layer_ok = layer_verifier::verify_layer_proof(
+            let layer_ok = verifier::verify_layer_proof(
                 &key_manager,
                 &layer_proof.proof_bytes,
                 &layer_instances,

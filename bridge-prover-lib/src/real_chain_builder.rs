@@ -3,12 +3,15 @@
 //! Builds genuine chain proofs by reconstructing layer Poseidon trees from
 //! intermediate key blocks fetched via GraphQL.
 //!
-//! Tree structure per layer per window (WINDOW_SIZE=4):
-//!   Leaf [0]: higher_layer_root (layer N+1 root, or zero)
-//!   Leaf [1]: prev_same_layer_root (chain position for same-layer linking)
-//!   Leaf [2..5]: data leaves (layer 1: block leaves; layer 2+: lower-layer roots)
-//!   Leaf [6..7]: zero padding
-//! Total: 8 leaves, depth 3.
+//! Tree structure per layer per window (HISTORY_PROOF_WINDOW_SIZE=128, the prod value):
+//!   Leaf [0]:        higher_layer_root (layer N+1 root, or zero)
+//!   Leaf [1]:        prev_same_layer_root (chain position for same-layer linking)
+//!   Leaf [2..130]:   data leaves (layer 1: block leaves; layer 2+: lower-layer roots) — 128 slots
+//!   Leaf [130..256]: zero padding (to next power of 2)
+//! Total: 256 leaves, depth 8.
+//!
+//! Generalised: for any HISTORY_PROOF_WINDOW_SIZE = W the layout is
+//!   [higher_layer_root, prev_same_layer_root, data×W, zero-pad to next pow2(W+2)].
 
 use std::collections::BTreeMap;
 
@@ -64,18 +67,23 @@ pub async fn build_real_chain(
     );
 
     // Determine if a TRULY new layer appeared (never seen before).
-    // A layer re-appearing after being absent (e.g., L2 at block 32 after
-    // blocks 20-28 had only L1) is NOT a new layer — it uses same-layer chain.
-    let max_ever = state.max_layers_ever_seen();
-    let new_layer_appeared = num_layers > max_ever && max_ever > 0;
+    // A layer re-appearing after being absent is NOT a new layer — it uses
+    // the same-layer chain.
+    //
+    // Example with W = 128: L2 first appears at block W^2 = 16384, then again
+    // at 2·W^2 = 32768. Between those L2 boundaries the key blocks at
+    // 16512, 16640, …, 32640 are L1-only. The L2 boundary at 32768 is a
+    // re-appearance, not a brand-new layer, so it takes the same-layer path.
+    //
+    // `prev_num_layers` is the highest populated 1-based layer index — see
+    // `BridgeState::num_active_layers` for why count == max-index here.
+    let new_layer_appeared = num_layers > prev_num_layers && prev_num_layers > 0;
 
     if new_layer_appeared {
         // New layer appeared: single step where prev_hash is a DATA leaf
         // in the new layer's tree (not at position 1).
         build_chain_for_new_layer(
             gql,
-            state,
-            target_history_proofs,
             target_seqno,
             num_layers,
             prev_hash,
@@ -87,7 +95,6 @@ pub async fn build_real_chain(
         build_chain_same_layer(
             gql,
             state,
-            target_history_proofs,
             target_seqno,
             num_layers,
             prev_hash,
@@ -104,7 +111,6 @@ pub async fn build_real_chain(
 async fn build_chain_same_layer(
     gql: &GqlClient,
     state: &BridgeState,
-    target_history_proofs: &BTreeMap<u8, [u8; 32]>,
     target_seqno: u64,
     num_layers: usize,
     prev_hash: [u8; 32],
@@ -161,7 +167,7 @@ async fn build_chain_same_layer(
 
     for &key_seq in &key_seqnos {
         let tree = if chain_layer == 1 {
-            build_layer1_tree(gql, key_seq, chain_leaf_value, target_history_proofs, window_size)
+            build_layer1_tree(gql, key_seq, chain_leaf_value, window_size)
                 .await
                 .with_context(|| format!("building layer 1 tree at seq={}", key_seq))?
         } else {
@@ -199,13 +205,14 @@ async fn build_chain_same_layer(
     })
 }
 
-/// Build chain when a new layer appeared (e.g., layer 2 at block 16).
+/// Build chain when a new layer appeared.
+///
+/// Layer N first materialises at block height `W^N` (e.g. with W = 128, layer 2
+/// first appears at block 16384, layer 3 at 2^21 = 2_097_152, etc.).
 ///
 /// Single step: build the new layer's tree and find prev_hash among its data leaves.
 async fn build_chain_for_new_layer(
     gql: &GqlClient,
-    _state: &BridgeState,
-    _target_history_proofs: &BTreeMap<u8, [u8; 32]>,
     target_seqno: u64,
     num_layers: usize,
     prev_hash: [u8; 32],
@@ -269,16 +276,16 @@ async fn build_chain_for_new_layer(
 
 /// Build a layer 1 Poseidon tree for a key block.
 ///
-/// Leaf layout:
-///   [0]: higher_layer_root (layer 2 root from this block, or zero)
-///   [1]: prev_same_layer_root = chain_leaf_value (from previous key block)
-///   [2..5]: Poseidon(block_id || envelope_hash || ext_msg_root) for 4 blocks in the window
-///   [6..7]: zero padding
+/// Leaf layout (see crate-level docs for the concrete W=128 example):
+///   [0]:         higher_layer_root (layer 2 root from this block, or zero)
+///   [1]:         prev_same_layer_root = chain_leaf_value (from previous key block)
+///   [2..W+2]:    Poseidon(block_id || envelope_hash || ext_msg_root) for the
+///                HISTORY_PROOF_WINDOW_SIZE (W) blocks in the window
+///   [W+2..pow2]: zero padding (to next power of 2)
 async fn build_layer1_tree(
     gql: &GqlClient,
     key_block_seqno: u64,
     chain_leaf_value: [u8; 32],
-    _target_history_proofs: &BTreeMap<u8, [u8; 32]>,
     window_size: u64,
 ) -> anyhow::Result<LayerTreeData> {
     // Higher layer root (layer 2): the MOST RECENT L2 root, not necessarily from
@@ -295,7 +302,7 @@ async fn build_layer1_tree(
         }
     };
 
-    // Fetch block metadata for the WINDOW_SIZE blocks in this window.
+    // Fetch block metadata for the HISTORY_PROOF_WINDOW_SIZE (W) blocks in this window.
     // Window for layer 1 at height H: blocks [H - W, ..., H - 1].
     // The key block itself is NOT in the window — the window contains
     // the W blocks BEFORE the key block.
@@ -328,11 +335,11 @@ async fn build_layer1_tree(
 
 /// Build a layer N (N>=2) Poseidon tree for a key block.
 ///
-/// Leaf layout:
-///   [0]: higher_layer_root (layer N+1 root, or zero)
-///   [1]: prev_same_layer_root = chain_leaf_value
-///   [2..5]: layer N-1 root hashes from WINDOW_SIZE intermediate key blocks
-///   [6..7]: zero padding
+/// Leaf layout (see crate-level docs for the concrete W=128 example):
+///   [0]:        higher_layer_root (layer N+1 root, or zero)
+///   [1]:        prev_same_layer_root = chain_leaf_value
+///   [2..W+2]:   layer N-1 root hashes from HISTORY_PROOF_WINDOW_SIZE (W) intermediate key blocks
+///   [W+2..pow2]: zero padding (to next power of 2)
 async fn build_layer_n_tree(
     gql: &GqlClient,
     key_block_seqno: u64,
@@ -374,12 +381,12 @@ async fn build_layer_n_leaves(
             .unwrap_or([0u8; 32])
     };
 
-    // Data leaves: layer (N-1) roots from WINDOW_SIZE key blocks.
+    // Data leaves: layer (N-1) roots from HISTORY_PROOF_WINDOW_SIZE (W) key blocks.
     // The step size for layer N-1 is window_size^(N-1).
     let lower_layer = layer - 1;
     let lower_step = window_size.pow(lower_layer as u32);
 
-    // The WINDOW_SIZE key blocks contributing to this layer N tree:
+    // The HISTORY_PROOF_WINDOW_SIZE (W) key blocks contributing to this layer N tree:
     // [key_block_seqno - (W-1)*lower_step, ..., key_block_seqno - lower_step, key_block_seqno]
     let mut data_leaves = Vec::with_capacity(window_size as usize);
     for i in 0..window_size {
@@ -407,13 +414,11 @@ async fn build_layer_n_leaves(
     Ok(leaves)
 }
 
-/// Fetch a specific layer's root hash from a block's history_proofs (public for testing).
-pub async fn fetch_layer_root_pub(gql: &GqlClient, seqno: u64, layer: u8) -> anyhow::Result<[u8; 32]> {
-    fetch_layer_root(gql, seqno, layer).await
-}
-
-/// Fetch a specific layer's root hash from a block's history_proofs via GQL.
-async fn fetch_layer_root(gql: &GqlClient, seqno: u64, layer: u8) -> anyhow::Result<[u8; 32]> {
+/// Fetch a specific layer's root hash from a block's `history_proofs` via GQL.
+///
+/// `pub` so integration tests and downstream binaries can probe individual
+/// layer roots without going through the full chain builder.
+pub async fn fetch_layer_root(gql: &GqlClient, seqno: u64, layer: u8) -> anyhow::Result<[u8; 32]> {
     let block = gql.query_proof_block_by_seqno(seqno).await?;
     block
         .history_proofs

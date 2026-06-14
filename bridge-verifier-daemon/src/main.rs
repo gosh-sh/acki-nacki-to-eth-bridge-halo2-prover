@@ -15,7 +15,6 @@ use bridge_prover_lib::bridge_state::{BridgeState, MAX_LAYERS};
 use bridge_event_prover_lib as event_verifier;
 use bridge_prover_lib::ipc;
 use bridge_prover_lib::keys::KeyManager;
-use bridge_prover_lib::layer_verifier;
 use bridge_prover_lib::poseidon;
 use bridge_prover_lib::verifier;
 use bridge_prover_lib::Fr;
@@ -370,7 +369,7 @@ async fn main() -> anyhow::Result<()> {
             layer_instances.push(prev_hash_fr);          // [13]
 
             let t = Instant::now();
-            let layer_verified = layer_verifier::verify_layer_proof(
+            let layer_verified = verifier::verify_layer_proof(
                 &key_manager,
                 &layer_proof_bytes,
                 &layer_instances,

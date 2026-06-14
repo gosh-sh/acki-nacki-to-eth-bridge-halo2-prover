@@ -454,7 +454,7 @@ kill $(cat logs/pids.txt | cut -d= -f2)
 
 ### `state/prover_state.json` and `state/verifier_state.json`
 
-Persisted bridge state — layer hashes per active layer (1..`max_layers_ever_seen`), the last relayed key-block seqno/height, BK set commitment. The verifier file is the canonical off-chain mirror of the Ethereum contract's `layerWindows` storage.
+Persisted bridge state — layer hashes per active layer (1..`num_active_layers`), the last relayed key-block seqno/height, BK set commitment. The verifier file is the canonical off-chain mirror of the Ethereum contract's `layerWindows` storage.
 
 ### `state/bootstrap_seed.json`
 

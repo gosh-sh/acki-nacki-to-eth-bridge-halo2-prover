@@ -453,22 +453,11 @@ impl GqlClient {
 
     /// Build a `ParsedAttestation` for the block at `target_seq_no` by reading
     /// the target block's own `Block.attestations[]` field.
-    ///
-    /// Post-fix (acki-nacki `fix/poseidon_dex_attestations_gql`, 2026-06-09):
     /// the resolver filters `Block.attestations[]` so it returns only entries
     /// whose inner `AttestationData.block_id == self.id`, i.e. attestations
     /// FOR THIS block. The producer's common section still owns the row, but
     /// the GQL view is now consumer-oriented: "give me the attestation that
     /// signed block N" → query block N directly.
-    ///
-    /// Why this path (and not the target block's own envelope fields):
-    /// `Block.aggregated_signature` / `Block.signature_occurrences` on the
-    /// target block are the BLOCK envelope (signed over
-    /// `bincode(AckiNackiBlock)`), not an `Envelope<AttestationData>`. They
-    /// cannot drive Circuit 1A even though the byte sizes happen to match.
-    /// Only `common_section.block_attestations()` — which is what
-    /// `Block.attestations[]` projects — contains true
-    /// `Envelope<AttestationData>` instances.
     pub async fn query_attestation_envelope(
         &self,
         target_seq_no: u64,

@@ -1,16 +1,11 @@
 //! Fetch attestations for a target block via GraphQL `Block.attestations[]`.
 //!
-//! The v3 gql-server (acki-nacki `fix/poseidon_dex_attestations_gql` and
-//! later) exposes `Block.attestations[]` as a consumer-oriented view: the
+//! The v3 gql-server exposes `Block.attestations[]` as a consumer-oriented view: the
 //! resolver filters entries so each block's array contains attestations whose
 //! inner `AttestationData.block_id` matches that block's own id — i.e. "the
 //! attestation that signed THIS block". Behind the scenes the row still lives
 //! in a later block's `common_section.block_attestations()`, but the GQL view
 //! hides that and we just query block N directly.
-//!
-//! This path supersedes the legacy "scan block N+1 BOC for nested bincode
-//! envelopes" approach that boc_parser.rs implemented; v3 `Block.data` is
-//! zstd-compressed and no longer a bincode envelope.
 
 use std::collections::HashMap;
 

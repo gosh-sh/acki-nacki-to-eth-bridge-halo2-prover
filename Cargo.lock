@@ -702,8 +702,8 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber 0.3.23",
- "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
- "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge)",
 ]
 
 [[package]]
@@ -799,7 +799,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",
- "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge)",
 ]
 
 [[package]]
@@ -4336,7 +4336,7 @@ dependencies = [
 [[package]]
 name = "tvm_abi"
 version = "3.0.0"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#b520ec43547f9c172a72275b405d30afb59a7372"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge#b520ec43547f9c172a72275b405d30afb59a7372"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4346,8 +4346,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
- "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge)",
 ]
 
 [[package]]
@@ -4372,7 +4372,7 @@ dependencies = [
 [[package]]
 name = "tvm_block"
 version = "3.0.0"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#b520ec43547f9c172a72275b405d30afb59a7372"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge#b520ec43547f9c172a72275b405d30afb59a7372"
 dependencies = [
  "anyhow",
  "base64",
@@ -4385,7 +4385,7 @@ dependencies = [
  "num-traits",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge)",
 ]
 
 [[package]]
@@ -4441,7 +4441,7 @@ dependencies = [
 [[package]]
 name = "tvm_types"
 version = "3.0.0"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#b520ec43547f9c172a72275b405d30afb59a7372"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge#b520ec43547f9c172a72275b405d30afb59a7372"
 dependencies = [
  "aes",
  "anyhow",
@@ -4561,7 +4561,7 @@ dependencies = [
 [[package]]
 name = "tvm_vm"
 version = "3.0.0"
-source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit#b520ec43547f9c172a72275b405d30afb59a7372"
+source = "git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge#b520ec43547f9c172a72275b405d30afb59a7372"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -4611,8 +4611,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tvm_abi 3.0.0",
- "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
- "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=full_dex_and_bridge_test_with_final_halo2_circuit)",
+ "tvm_block 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge)",
+ "tvm_types 3.0.0 (git+https://github.com/tvmlabs/tvm-sdk.git?branch=dex_and_bridge)",
  "typenum",
  "zstd",
 ]

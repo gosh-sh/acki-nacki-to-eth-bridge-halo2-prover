@@ -224,26 +224,14 @@ impl BridgeState {
         self.initialized = true;
     }
 
-    /// Number of layers that have at least one entry. Used by Circuit 2.
+    /// Number of layers that currently have at least one entry. Used by
+    /// Circuit 2.
     pub fn num_active_layers(&self) -> usize {
         self.layer_windows.iter().filter(|w| w.data_len > 0).count()
     }
 
-    /// Highest layer index (1-based) that has ever been populated.
-    /// Returns 0 when no layer has any data. Equivalent to the old
-    /// `max_layers_ever_seen` field; in this design once a window receives an
-    /// append it stays non-empty, so this is a monotone quantity.
-    pub fn max_layers_ever_seen(&self) -> usize {
-        self.layer_windows
-            .iter()
-            .rposition(|w| w.data_len > 0)
-            .map(|i| i + 1)
-            .unwrap_or(0)
-    }
-
     /// Flatten all layer windows chronologically into a single
-    /// `MAX_LAYERS × W` vector. Empty slots are zero. Used to build Circuit 4
-    /// public inputs (the `NUM_LAYER_HASHES` candidate list).
+    /// `MAX_LAYERS × W` vector. Empty slots are zero. 
     pub fn flatten_layer_hashes(&self) -> Vec<[u8; 32]> {
         let mut out = Vec::with_capacity(MAX_LAYERS * self.window_size);
         for win in &self.layer_windows {
