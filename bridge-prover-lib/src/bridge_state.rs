@@ -125,6 +125,13 @@ impl HistoryWindow {
 }
 
 /// Shared bridge state — full mirror of the contract's `GlobalHistoryData`.
+///
+/// This struct mirrors what the future Ethereum bridge contract will store.
+/// In particular it holds the BK-set **commitment only** (32 bytes), not the
+/// pubkey list — the contract would never store the full set, and the
+/// verifier daemon (which models the contract) must not either. The
+/// prover's pubkey table lives separately in `ProverBkSet`
+/// (`prover_bk_set.rs`) and is loaded only by the prover daemon.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BridgeState {
     /// `W` — width of every per-layer window. Once set, immutable for the run.
@@ -148,9 +155,20 @@ pub struct BridgeState {
     /// state files thanks to `#[serde(default)]`.
     #[serde(default)]
     pub recent_bundles: VecDeque<BundleResult>,
+
+    /// Schema v4: seq_no of the last bk-set-update block whose transition has
+    /// been applied to `stored_bk_set_commitment`. Mirrors what the ETH
+    /// contract will store. Zero on first bootstrap (no updates applied yet).
+    ///
+    /// Updates are gated through [`BridgeState::apply_bk_set_update`] which
+    /// requires `update_seq_no > stored_last_bk_set_update_seq_no` so replays
+    /// and out-of-order applies are rejected. Older schema files (v3 and
+    /// below) deserialize this as zero via `#[serde(default)]`.
+    #[serde(default)]
+    pub stored_last_bk_set_update_seq_no: u64,
 }
 
-fn default_schema_version() -> u32 { 3 }
+fn default_schema_version() -> u32 { 4 }
 
 impl BridgeState {
     /// Create an uninitialized state with `MAX_LAYERS` zero windows of the
@@ -163,9 +181,51 @@ impl BridgeState {
             stored_last_seen_block_seq_no: 0,
             stored_last_seen_block_height: 0,
             initialized: false,
-            schema_version: 3,
+            schema_version: 4,
             recent_bundles: VecDeque::new(),
+            stored_last_bk_set_update_seq_no: 0,
         }
+    }
+
+    /// Apply a verified bk-set transition to the contract-mirror state.
+    ///
+    /// This is the off-chain analogue of the future Solidity
+    /// `applyBkSetUpdate` entry point: same inputs, same checks. It is
+    /// commitment-only by design — the full pubkey table is the prover's
+    /// private working set (see `ProverBkSet`) and never touches this state
+    /// because the ETH contract will not store it either.
+    ///
+    /// Preconditions (any failure → unchanged state, error returned):
+    /// * `old_commitment == self.stored_bk_set_commitment` — the update's
+    ///   declared OLD commitment must match what the bridge has stored.
+    /// * `update_block_seq_no > self.stored_last_bk_set_update_seq_no` —
+    ///   monotonicity, prevents replays / out-of-order applies.
+    ///
+    /// On success: rotates the stored commitment to `new_commitment` and
+    /// advances the bk-update seq_no cursor. Does NOT touch
+    /// `stored_last_seen_block_seq_no` (that gates W·P thinning and is the
+    /// layer-bundle cursor — independent from the bk-update cursor).
+    pub fn apply_bk_set_update(
+        &mut self,
+        old_commitment: [u8; 32],
+        new_commitment: [u8; 32],
+        update_block_seq_no: u64,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            old_commitment == self.stored_bk_set_commitment,
+            "bk-update old commitment {} does not match stored {}",
+            hex::encode(old_commitment),
+            hex::encode(self.stored_bk_set_commitment),
+        );
+        anyhow::ensure!(
+            update_block_seq_no > self.stored_last_bk_set_update_seq_no,
+            "bk-update seq_no {} is not strictly greater than last applied {}",
+            update_block_seq_no,
+            self.stored_last_bk_set_update_seq_no,
+        );
+        self.stored_bk_set_commitment = new_commitment;
+        self.stored_last_bk_set_update_seq_no = update_block_seq_no;
+        Ok(())
     }
 
     /// Push a `BundleResult` onto the recent-bundles ring, evicting the
@@ -368,6 +428,58 @@ mod tests {
         s.append_layer(1, [3u8; 32], 24);
         assert_eq!(s.slot_for_event_height(1, 16), Some(1));
         assert_eq!(s.slot_for_event_height(1, 99), None);
+    }
+
+    #[test]
+    fn apply_bk_set_update_happy_path() {
+        let mut s = BridgeState::new(8);
+        s.stored_bk_set_commitment = [7u8; 32];
+        let new_c = [9u8; 32];
+        s.apply_bk_set_update([7u8; 32], new_c, 1024).unwrap();
+        assert_eq!(s.stored_bk_set_commitment, new_c);
+        assert_eq!(s.stored_last_bk_set_update_seq_no, 1024);
+    }
+
+    #[test]
+    fn apply_bk_set_update_rejects_stale_old() {
+        let mut s = BridgeState::new(8);
+        s.stored_bk_set_commitment = [7u8; 32];
+        let err = s.apply_bk_set_update([1u8; 32], [9u8; 32], 1024).unwrap_err();
+        assert!(format!("{err}").contains("does not match stored"));
+        // State must be unchanged.
+        assert_eq!(s.stored_bk_set_commitment, [7u8; 32]);
+        assert_eq!(s.stored_last_bk_set_update_seq_no, 0);
+    }
+
+    #[test]
+    fn apply_bk_set_update_rejects_replay() {
+        let mut s = BridgeState::new(8);
+        s.stored_bk_set_commitment = [7u8; 32];
+        s.apply_bk_set_update([7u8; 32], [9u8; 32], 1024).unwrap();
+        // Same seq_no — replay.
+        let err = s.apply_bk_set_update([9u8; 32], [10u8; 32], 1024).unwrap_err();
+        assert!(format!("{err}").contains("not strictly greater"));
+        // Out-of-order older seq_no.
+        let err = s.apply_bk_set_update([9u8; 32], [10u8; 32], 500).unwrap_err();
+        assert!(format!("{err}").contains("not strictly greater"));
+    }
+
+    #[test]
+    fn v3_state_file_deserializes_with_default_bk_update_seqno() {
+        // Schema v3 state JSON (without `stored_last_bk_set_update_seq_no`)
+        // must still load cleanly with the new field defaulting to 0.
+        let v3_json = r#"{
+            "window_size": 4,
+            "layer_windows": [],
+            "stored_bk_set_commitment": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "stored_last_seen_block_seq_no": 42,
+            "stored_last_seen_block_height": 42,
+            "initialized": true,
+            "schema_version": 3
+        }"#;
+        let st: BridgeState = serde_json::from_str(v3_json).unwrap();
+        assert_eq!(st.stored_last_bk_set_update_seq_no, 0);
+        assert!(st.recent_bundles.is_empty());
     }
 
     #[test]

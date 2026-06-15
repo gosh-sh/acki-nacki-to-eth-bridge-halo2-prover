@@ -45,10 +45,15 @@ use bridge_prover_lib::THINNING_FACTOR_P;
 use halo2_base::halo2_proofs::halo2curves::group::ff::PrimeField;
 
 use bridge_prover_lib::attestation_fetcher::{self, AttestationEvidence};
+use bridge_prover_lib::bk_set_fetcher::{
+    self, BK_CHANGE_VARIANT_ADDED, BK_CHANGE_VARIANT_REMOVED,
+};
+use bridge_prover_lib::block_id_tree::BlockIdMerkleTree;
 use bridge_prover_lib::bootstrap::{self, BootstrapSeed};
 use bridge_prover_lib::bridge_state::BridgeState;
 #[cfg(feature = "self-verify")]
 use bridge_prover_lib::bridge_state::BundleResult;
+use bridge_prover_lib::prover_bk_set::ProverBkSet;
 use bridge_prover_lib::gql_client::{self, GqlClient};
 use bridge_prover_lib::ipc;
 use bridge_prover_lib::keys::KeyManager;
@@ -90,6 +95,11 @@ const VERIFIER_TIMEOUT: Duration = Duration::from_secs(300);
 const PARAMS_DIR: &str = "./params";
 const LOGS_DIR: &str = "./logs";
 const STATE_FILE: &str = "./state/prover_state.json";
+/// Prover-private pubkey table. Holds the same `signer_index → 48B BLS
+/// pubkey` map that the prover uses to build Circuit 1a/1b witnesses;
+/// the verifier daemon (= contract mirror) never reads it. See
+/// `bridge_prover_lib::prover_bk_set::ProverBkSet` for the rationale.
+const PROVER_BK_SET_FILE: &str = "./state/prover_bk_set.json";
 const BK_SET_CONFIG: &str = "./bk_set.json";
 
 #[derive(Default)]
@@ -165,9 +175,11 @@ async fn main() -> anyhow::Result<()> {
     let gql = gql_client::create_client(&gql_endpoint)?;
     info!("GraphQL client created");
 
-    // 2. Fetch BK set.
-    let bk_set = load_bk_set(&gql).await?;
-    let (bk_set_commitment, _) = poseidon::compute_bk_set_poseidon(&bk_set);
+    // 2. Fetch BK set. `mut` so the bk-update drain loop in the main loop can
+    // rotate both the pubkey map and its Poseidon commitment in lockstep with
+    // `prover_bk_set` and `state.stored_bk_set_commitment`.
+    let mut bk_set = load_bk_set(&gql).await?;
+    let (mut bk_set_commitment, _) = poseidon::compute_bk_set_poseidon(&bk_set);
     info!("BK set: {} signers, commitment={:?}", bk_set.len(), bk_set_commitment);
 
     // 3. Initialize key manager (both circuits).
@@ -183,6 +195,88 @@ async fn main() -> anyhow::Result<()> {
     // 4. Load or create state.
     let mut state = BridgeState::load(STATE_FILE, HISTORY_WINDOW_SIZE as usize)?;
     info!("state loaded: initialized={}, last_key_block={}", state.initialized, state.stored_last_seen_block_seq_no);
+
+    // 4a. Materialise the prover-private BK pubkey table.
+    //
+    // Phase 1 (Plan §2.2): `prover_bk_set.json` lives next to `state.json`
+    // and tracks the same pubkeys we already fetched into `bk_set` above.
+    // Both files must agree on the BK-set commitment; if they ever drift
+    // (e.g. hand-edited state, partial migration) we re-derive from the
+    // in-memory `bk_set` map and overwrite the file. The verifier daemon
+    // NEVER loads this file — it mirrors only the commitment.
+    //
+    // On local devnet (where the BK set never rotates) this file is written
+    // once at bootstrap and never updated afterwards. On shellnet, future
+    // bk-update bundles (Phase 3) will rotate both `state.json` and this
+    // file in lockstep.
+    // Phase 3: mutable so the main-loop drain can `rotate()` the table after
+    // a verified bk-update bundle. Drives Circuit 1a/1b witness construction
+    // for bk-update blocks (signed by the OLD set, i.e. L2's pubkeys).
+    let mut prover_bk_set: ProverBkSet = match ProverBkSet::load(PROVER_BK_SET_FILE)? {
+        Some(loaded) => {
+            // If `state` is initialised and the commitments disagree, the
+            // safe move is to refuse to start: this almost always means the
+            // operator forgot to clean up one of the two files between runs.
+            // Before initialisation `stored_bk_set_commitment` is all-zero,
+            // so we skip the check in that case.
+            if state.initialized && loaded.commitment != state.stored_bk_set_commitment {
+                anyhow::bail!(
+                    "prover_bk_set.json commitment {} disagrees with prover_state.json {} — \
+                     delete BOTH files or restore them from a paired backup",
+                    hex::encode(loaded.commitment),
+                    hex::encode(state.stored_bk_set_commitment),
+                );
+            }
+            info!(
+                "prover_bk_set: loaded {} signers, last_applied_update_seq_no={}",
+                loaded.pubkeys_hex.len(),
+                loaded.last_applied_update_seq_no,
+            );
+            // Authority shift: once a paired `prover_bk_set` exists on disk,
+            // IT (not the GQL-fresh `bk_set` we fetched at step 2) is the
+            // source of truth for "what set has been formally applied to the
+            // contract-mirror state". If the chain has rotated since the last
+            // run, the freshly fetched `bk_set` will be ahead of
+            // `prover_bk_set` — those intermediate rotations must be drained
+            // through the bk-update bundle path, not absorbed silently. So
+            // re-anchor the in-memory `bk_set` / `bk_set_commitment` to the
+            // persisted ProverBkSet; the main-loop drain will catch up via
+            // `next_update_after`.
+            bk_set = loaded.pubkeys()
+                .context("prover_bk_set.pubkeys() failed after load")?;
+            let (fr, _) = poseidon::compute_bk_set_poseidon(&bk_set);
+            bk_set_commitment = fr;
+            info!(
+                "re-anchored in-memory bk_set to prover_bk_set: {} signers, commitment={}",
+                bk_set.len(),
+                hex::encode(bk_set_commitment.to_repr()),
+            );
+            loaded
+        }
+        None => {
+            let pbs = ProverBkSet::from_pubkeys(&bk_set, 0);
+            // Cross-check: the Poseidon commitment we computed earlier in
+            // step 2 from the same `bk_set` map must match what ProverBkSet
+            // computes here. If they don't, something is structurally wrong
+            // (e.g. a Poseidon-parameter mismatch) and we shouldn't pretend
+            // bootstrap succeeded.
+            let bk_hash_bytes: [u8; 32] = bk_set_commitment.to_repr();
+            anyhow::ensure!(
+                pbs.commitment == bk_hash_bytes,
+                "ProverBkSet commitment {} != poseidon::compute_bk_set_poseidon {} — \
+                 Poseidon-parameter mismatch?",
+                hex::encode(pbs.commitment),
+                hex::encode(bk_hash_bytes),
+            );
+            pbs.save(PROVER_BK_SET_FILE)?;
+            info!(
+                "prover_bk_set: bootstrapped {} signers from GQL, written to {}",
+                pbs.pubkeys_hex.len(),
+                PROVER_BK_SET_FILE,
+            );
+            pbs
+        }
+    };
 
     // 5. If not initialized, derive bootstrap seed from a key block and persist
     //    it for the verifier.
@@ -306,6 +400,314 @@ async fn main() -> anyhow::Result<()> {
         }
         let target_seqno = next_key_seqno.unwrap();
         info!("=== Processing key block at height {} ===", target_seqno);
+        // Phase 3 BK-set-update drain.
+        //
+        // Real rotations land at arbitrary heights (NOT W·P-aligned), so the
+        // old L2≠L3-at-target-seqno detector would miss almost all of them.
+        // Instead we walk the bkSetUpdates stream past our applied cursor
+        // (`state.stored_last_bk_set_update_seq_no`) and drain every event
+        // whose height ≤ target_seqno BEFORE proving the layer bundle for
+        // this target. Each drained event:
+        //   * generates Circuit 1a/1b against the OLD prover_bk_set pubkeys
+        //   * writes `bkupd_NNN.json` and waits for `bkupd_result_NNN.json`
+        //   * on `verify_ok=true`, rotates BOTH state files (BridgeState +
+        //     ProverBkSet) and refreshes the in-memory `bk_set` /
+        //     `bk_set_commitment` so the subsequent layer bundle uses the
+        //     rotated set.
+        // See `docs/bk_set_update_no_circuit3_plan.md`, §9 items 4+5.
+        loop {
+            let cursor = state.stored_last_bk_set_update_seq_no;
+            let upd = match bk_set_fetcher::next_update_after(&gql, cursor).await {
+                Ok(Some(u)) => u,
+                Ok(None) => break, // no more pending events
+                Err(e) => {
+                    warn!("bk-update drain: next_update_after failed: {} — will retry next iteration", e);
+                    break;
+                }
+            };
+            let upd_seqno = match upd.height {
+                Some(h) if h > cursor && h <= target_seqno => h,
+                Some(h) if h > target_seqno => {
+                    // Future rotation — leave it for a later main-loop tick.
+                    info!(
+                        "bk-update drain: next event at {} is past target_seqno={}, deferring",
+                        h, target_seqno
+                    );
+                    break;
+                }
+                _ => {
+                    warn!("bk-update drain: skipping event with missing/stale height");
+                    break;
+                }
+            };
+
+            info!("=== bk-update drain: processing event at seq_no {} ===", upd_seqno);
+
+            // Fetch the bk-update block's 8 Merkle leaves to derive L2/L3
+            // and the open siblings H0/H23.
+            let upd_block = match gql.query_proof_block_by_seqno(upd_seqno).await {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("bk-update {}: GQL block fetch failed: {} — bailing drain", upd_seqno, e);
+                    break;
+                }
+            };
+            let leaves = match upd_block.block_merkle_tree_leaves {
+                Some(l) => l,
+                None => {
+                    warn!("bk-update {}: block has no block_merkle_tree_leaves — bailing drain", upd_seqno);
+                    break;
+                }
+            };
+            let tree = BlockIdMerkleTree::from_leaves(leaves);
+            let l2 = tree.leaves[2];
+            let l3 = tree.leaves[3];
+
+            // Cross-check: L2 must equal our currently-applied commitment.
+            // If not, the prover is out-of-sync with the chain's bk-set
+            // history — bail and let an operator investigate.
+            if l2 != prover_bk_set.commitment {
+                error!(
+                    "bk-update {}: L2 {} != prover_bk_set.commitment {} — \
+                     prover out of sync with chain bk-set history; bailing drain",
+                    upd_seqno,
+                    hex::encode(l2),
+                    hex::encode(prover_bk_set.commitment),
+                );
+                break;
+            }
+
+            // Apply the bk_set_update_hex deltas to the OLD pubkey table to
+            // derive the NEW one, and verify it hashes to L3.
+            let blob = match hex::decode(&upd.bk_set_update_hex) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("bk-update {}: bk_set_update_hex decode failed: {} — bailing", upd_seqno, e);
+                    break;
+                }
+            };
+            let changes = bk_set_fetcher::parse_bk_set_changes_pub(&blob);
+            if changes.is_empty() {
+                warn!("bk-update {}: parsed 0 changes from blob — bailing drain", upd_seqno);
+                break;
+            }
+            let cur_pubkeys = match prover_bk_set.pubkeys() {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("bk-update {}: prover_bk_set.pubkeys() failed: {} — bailing", upd_seqno, e);
+                    break;
+                }
+            };
+            let mut new_pubkeys = cur_pubkeys.clone();
+            for (variant, idx, pk) in &changes {
+                match *variant {
+                    BK_CHANGE_VARIANT_ADDED => {
+                        new_pubkeys.insert(*idx, pk.clone());
+                    }
+                    BK_CHANGE_VARIANT_REMOVED => {
+                        new_pubkeys.remove(idx);
+                    }
+                    other => {
+                        warn!("bk-update {}: ignoring unknown change variant {}", upd_seqno, other);
+                    }
+                }
+            }
+            // Delta entries come from the raw bk_set_update blob as 96-byte
+            // uncompressed BLS pubkeys, while `cur_pubkeys` is 48-byte
+            // compressed. Normalize before feeding to any BLS-aware helper
+            // (compute_bk_set_poseidon, Circuit 1a witness builder).
+            let new_pubkeys = match bk_set_fetcher::normalize_bk_set_pubkeys(new_pubkeys) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("bk-update {}: pubkey normalization failed: {} — bailing", upd_seqno, e);
+                    break;
+                }
+            };
+            let (_, recomp_c) = poseidon::compute_bk_set_poseidon(&new_pubkeys);
+            if recomp_c != l3 {
+                error!(
+                    "bk-update {}: Poseidon(new_pubkeys) {} != L3 {} — bailing drain",
+                    upd_seqno,
+                    hex::encode(recomp_c),
+                    hex::encode(l3),
+                );
+                break;
+            }
+
+            // Fetch attestation evidence for the bk-update block. These
+            // signatures are produced by the OLD signer set (the block that
+            // *announces* the rotation is itself signed by the prior set),
+            // so the Circuit 1a/1b witness uses `cur_pubkeys`.
+            let upd_evidence = match attestation_fetcher::fetch_attestation_evidence(
+                &gql, upd_seqno as u32,
+            ).await {
+                Ok(ev) => ev,
+                Err(e) => {
+                    warn!("bk-update {}: attestation fetch failed: {} — bailing drain", upd_seqno, e);
+                    break;
+                }
+            };
+
+            // Generate Circuit 1a/1b proof, on-demand PK load to stay within
+            // the same ~3.7 GB envelope as the layer-bundle path.
+            let last_seen_for_upd = state.stored_last_bk_set_update_seq_no as u32;
+            let t_upd_proof = Instant::now();
+            let (circuit_tag, upd_proof) = match &upd_evidence {
+                AttestationEvidence::Primary(att) => {
+                    info!("bk-update {}: PRIMARY path → Circuit 1a", upd_seqno);
+                    if let Err(e) = key_manager.load_primary_pk() {
+                        error!("bk-update {}: load_primary_pk failed: {} — bailing", upd_seqno, e);
+                        break;
+                    }
+                    let res = prover::generate_primary_proof(
+                        &key_manager,
+                        &att.raw_bytes,
+                        &cur_pubkeys,
+                        last_seen_for_upd,
+                    );
+                    key_manager.unload_primary_pk();
+                    match res {
+                        Ok(o) => (ipc::AttestationCircuit::Primary, o),
+                        Err(e) => {
+                            error!("bk-update {}: Circuit 1a proof failed: {} — bailing", upd_seqno, e);
+                            break;
+                        }
+                    }
+                }
+                AttestationEvidence::Fallback { primary, fallback } => {
+                    info!("bk-update {}: FALLBACK path → Circuit 1b", upd_seqno);
+                    if let Err(e) = key_manager.load_fallback_pk() {
+                        error!("bk-update {}: load_fallback_pk failed: {} — bailing", upd_seqno, e);
+                        break;
+                    }
+                    let res = prover::generate_fallback_proof(
+                        &key_manager,
+                        &primary.raw_bytes,
+                        &fallback.raw_bytes,
+                        &cur_pubkeys,
+                        last_seen_for_upd,
+                    );
+                    key_manager.unload_fallback_pk();
+                    match res {
+                        Ok(o) => (ipc::AttestationCircuit::Fallback, o),
+                        Err(e) => {
+                            error!("bk-update {}: Circuit 1b proof failed: {} — bailing", upd_seqno, e);
+                            break;
+                        }
+                    }
+                }
+            };
+            let upd_proof_gen_ms = t_upd_proof.elapsed().as_millis() as u64;
+            info!(
+                "bk-update {}: {:?} proof generated in {} ms",
+                upd_seqno, circuit_tag, upd_proof_gen_ms
+            );
+
+            // Write the bk-update bundle for the verifier daemon.
+            let req = ipc::BkUpdateRequest {
+                schema_version: ipc::PROOF_REQUEST_SCHEMA_VERSION,
+                block_seq_no: upd_seqno as u32,
+                block_height: upd_block.height,
+                last_seen_bk_update_seqno: last_seen_for_upd,
+                block_id_hex: ipc::fr_to_hex(&upd_proof.block_id_fr),
+                block_id_hash_hex: hex::encode(tree.root),
+                attestation_circuit: circuit_tag,
+                primary_proof_hex: hex::encode(&upd_proof.proof_bytes),
+                old_bk_set_poseidon_hash_hex: hex::encode(l2),
+                new_bk_set_poseidon_hash_hex: hex::encode(l3),
+                merkle_sibling_h0_hex: hex::encode(tree.h0),
+                merkle_sibling_h23_hex: hex::encode(tree.h23),
+                primary_proof_gen_ms: upd_proof_gen_ms,
+            };
+            if let Err(e) = ipc::write_bk_update_request(&req) {
+                error!("bk-update {}: write_bk_update_request failed: {} — bailing", upd_seqno, e);
+                break;
+            }
+            info!("bk-update {}: wrote {}", upd_seqno, ipc::bkupd_file_path(upd_seqno as u32));
+
+            // Block on the verifier daemon's ACK. Same timeout as the
+            // layer-bundle path.
+            #[cfg(not(feature = "self-verify"))]
+            let result = match ipc::wait_for_bk_update_result(upd_seqno as u32, VERIFIER_TIMEOUT).await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("bk-update {}: verifier timeout/err: {} — bailing", upd_seqno, e);
+                    break;
+                }
+            };
+            #[cfg(feature = "self-verify")]
+            let result = {
+                warn!(
+                    "bk-update {}: self-verify feature does not inline-verify bk-update bundles; \
+                     synthesising verify_ok=true based on local Merkle + monotonicity",
+                    upd_seqno
+                );
+                // Local checks already enforced by the Merkle equality
+                // assertion above and the apply_bk_set_update precondition.
+                ipc::BkUpdateResult {
+                    block_seq_no: upd_seqno as u32,
+                    attestation_verified: true,
+                    merkle_verified: true,
+                    monotonicity_ok: true,
+                    verify_ok: true,
+                    error: None,
+                }
+            };
+
+            if !result.verify_ok {
+                error!(
+                    "bk-update {}: verifier REJECTED (attestation={}, merkle={}, monotone={}, err={:?}) — \
+                     bailing drain; state NOT advanced",
+                    upd_seqno,
+                    result.attestation_verified,
+                    result.merkle_verified,
+                    result.monotonicity_ok,
+                    result.error,
+                );
+                break;
+            }
+
+            // Rotate BridgeState (commitment + bk-update cursor) and
+            // ProverBkSet (pubkey table + applied cursor) in lockstep.
+            if let Err(e) = state.apply_bk_set_update(l2, l3, upd_seqno) {
+                error!(
+                    "bk-update {}: local apply_bk_set_update failed AFTER verifier ACK: {} — \
+                     manual intervention required",
+                    upd_seqno, e
+                );
+                break;
+            }
+            if let Err(e) = state.save(STATE_FILE) {
+                error!("bk-update {}: state.save failed: {}", upd_seqno, e);
+                break;
+            }
+            if let Err(e) = prover_bk_set.rotate(l3, new_pubkeys.clone(), upd_seqno) {
+                error!(
+                    "bk-update {}: prover_bk_set.rotate failed: {} — manual intervention required",
+                    upd_seqno, e
+                );
+                break;
+            }
+            if let Err(e) = prover_bk_set.save(PROVER_BK_SET_FILE) {
+                error!("bk-update {}: prover_bk_set.save failed: {}", upd_seqno, e);
+                break;
+            }
+
+            // Refresh the in-memory bk_set and its Fr commitment so the
+            // subsequent layer bundle (and the next drain iteration, if any)
+            // sees the rotated set.
+            bk_set = new_pubkeys;
+            let (new_fr, _) = poseidon::compute_bk_set_poseidon(&bk_set);
+            bk_set_commitment = new_fr;
+
+            info!(
+                "bk-update {}: APPLIED — new commitment {}, {} signers active",
+                upd_seqno,
+                hex::encode(l3),
+                bk_set.len(),
+            );
+        }
+
 
         // Fetch and classify attestation evidence for the key block.
         //
@@ -339,6 +741,7 @@ async fn main() -> anyhow::Result<()> {
             state.save(STATE_FILE)?;
             continue;
         }
+
 
         let t_proof = Instant::now();
 

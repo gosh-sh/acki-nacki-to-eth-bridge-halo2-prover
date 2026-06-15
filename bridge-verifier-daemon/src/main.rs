@@ -170,6 +170,10 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. Watch for proof files and verify.
     let mut last_seen_seqno: u32 = state.stored_last_seen_block_seq_no as u32;
+    // Bk-set-update cursor. Mirrors what the future ETH contract will track
+    // as `storedLastBkUpdateSeq`. Starts from the persisted v4 field so a
+    // restart resumes from the last verified bk-update without re-applying.
+    let mut last_seen_bk_update_seqno: u32 = state.stored_last_bk_set_update_seq_no as u32;
     // Event-proof seqno tracker. Independent from `last_seen_seqno` because
     // `bridge-event-prove` writes `proof_event_NNNNNN.json` with its own
     // counter (typically 0..N per orchestrator run). Not persisted across
@@ -229,6 +233,25 @@ async fn main() -> anyhow::Result<()> {
                     // next tick — sleep below covers the wait.
                 }
             }
+        }
+
+        // Bk-set-update bundles take priority over layer bundles. The
+        // prover writes them with `seq_no` set to the bk-update block's
+        // seq_no; if a layer bundle also targets the same key block (case
+        // B in `docs/bk_set_update_no_circuit3_plan.md` §8), the contract
+        // must rotate the commitment BEFORE the next layer bundle arrives
+        // — but the layer bundle for the bk-update block itself uses the
+        // OLD commitment and so still verifies. Processing bk-update
+        // bundles first preserves that order without extra coordination.
+        if let Some(bkupd_seqno) = find_next_bk_update_file(last_seen_bk_update_seqno) {
+            process_bk_update_bundle(
+                bkupd_seqno,
+                &key_manager,
+                &mut state,
+                &mut last_seen_bk_update_seqno,
+                STATE_FILE,
+            );
+            continue;
         }
 
         // Look for proofs with seq_no > last_seen_seqno.
@@ -582,6 +605,322 @@ fn write_failure(seq_no: u32, error: &str) {
     if let Err(e) = ipc::write_result(&result) {
         error!("failed to write result for block {}: {}", seq_no, e);
     }
+}
+
+// =====================================================================
+// BK-set-update bundle scanner + verifier (schema v4)
+// =====================================================================
+//
+// On local devnet the prover never produces `bkupd_*.json` (the BK set is
+// fixed at genesis), so the scanner returns `None` every poll and this
+// path stays dormant. On shellnet — once Phase 3 lands the prover side —
+// the scanner picks up bk-update bundles as they appear and applies them.
+//
+// The three checks performed here are exactly the three checks the future
+// Solidity `applyBkSetUpdate` will perform:
+//   1. ZK attestation against `[block_id, L2, block_seq_no, last_seen]`.
+//   2. SHA-256 Merkle binding: `root(L2, L3, H0, H23) == block_id`.
+//   3. Monotonicity: `block_seq_no > stored_last_bk_set_update_seq_no`.
+// The verifier never sees the pubkey list — by design (the ETH contract
+// will not store it, so the daemon must not either).
+
+/// Scan proofs/ for any `bkupd_NNNNNN.json` with seq_no > last_seen.
+fn find_next_bk_update_file(last_seen: u32) -> Option<u32> {
+    let dir = match std::fs::read_dir("proofs") {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    let mut candidates: Vec<u32> = dir
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            // Must distinguish `bkupd_NNNNNN.json` from `bkupd_result_NNNNNN.json`.
+            if name.starts_with("bkupd_")
+                && name.ends_with(".json")
+                && !name.starts_with("bkupd_result_")
+            {
+                let num_str = name
+                    .trim_start_matches("bkupd_")
+                    .trim_end_matches(".json");
+                num_str.parse::<u32>().ok()
+            } else {
+                None
+            }
+        })
+        .filter(|&seq| seq > last_seen)
+        .collect();
+    candidates.sort();
+    candidates.first().copied()
+}
+
+fn write_bk_update_failure(seq_no: u32, error: &str) {
+    let r = ipc::BkUpdateResult {
+        block_seq_no: seq_no,
+        attestation_verified: false,
+        merkle_verified: false,
+        monotonicity_ok: false,
+        verify_ok: false,
+        error: Some(error.to_string()),
+    };
+    if let Err(e) = ipc::write_bk_update_result(&r) {
+        error!("failed to write bk-update result for block {}: {}", seq_no, e);
+    }
+}
+
+/// SHA-256(left ‖ right) for Merkle internal nodes.
+fn sha256_concat(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(left);
+    hasher.update(right);
+    hasher.finalize().into()
+}
+
+/// Verify and (on success) apply one bk-update bundle. Mirrors the future
+/// Solidity entry point shape — three checks, all-or-nothing apply, state
+/// touches only the commitment + the bk-update cursor.
+fn process_bk_update_bundle(
+    seq_no: u32,
+    key_manager: &KeyManager,
+    state: &mut BridgeState,
+    last_seen_bk_update_seqno: &mut u32,
+    state_file: &str,
+) {
+    info!("found bk-update bundle for seq_no={}", seq_no);
+
+    let req = match ipc::read_bk_update_request(seq_no) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("bk-update {}: failed to read file: {}", seq_no, e);
+            write_bk_update_failure(seq_no, &format!("read error: {}", e));
+            *last_seen_bk_update_seqno = seq_no;
+            return;
+        }
+    };
+
+    // Decode the open payload first — it's cheap and the result file is
+    // most useful when the parse failure pinpoints which field was malformed.
+    let l2 = match decode_hash32(&req.old_bk_set_poseidon_hash_hex, "old_bk_set_poseidon_hash") {
+        Ok(b) => b,
+        Err(msg) => return finalize_bk_update_failure(seq_no, &msg, last_seen_bk_update_seqno),
+    };
+    let l3 = match decode_hash32(&req.new_bk_set_poseidon_hash_hex, "new_bk_set_poseidon_hash") {
+        Ok(b) => b,
+        Err(msg) => return finalize_bk_update_failure(seq_no, &msg, last_seen_bk_update_seqno),
+    };
+    let h0 = match decode_hash32(&req.merkle_sibling_h0_hex, "merkle_sibling_h0") {
+        Ok(b) => b,
+        Err(msg) => return finalize_bk_update_failure(seq_no, &msg, last_seen_bk_update_seqno),
+    };
+    let h23 = match decode_hash32(&req.merkle_sibling_h23_hex, "merkle_sibling_h23") {
+        Ok(b) => b,
+        Err(msg) => return finalize_bk_update_failure(seq_no, &msg, last_seen_bk_update_seqno),
+    };
+    let block_id_fr = match ipc::fr_from_hex(&req.block_id_hex) {
+        Ok(fr) => fr,
+        Err(e) => return finalize_bk_update_failure(
+            seq_no,
+            &format!("invalid block_id_hex: {e}"),
+            last_seen_bk_update_seqno,
+        ),
+    };
+    // The chain's raw 32-byte block hash for the SHA-256 Merkle reconstruction.
+    // `block_id_hex` is the Fr-reduced form (254-bit), so it cannot be used
+    // here when the chain hash exceeds the Fr modulus (top 2 bits set on the
+    // LE-interpreted big-endian byte string). The bundle carries the raw hash
+    // separately in `block_id_hash_hex`.
+    let block_id_bytes = match decode_hash32(&req.block_id_hash_hex, "block_id_hash") {
+        Ok(b) => b,
+        Err(msg) => return finalize_bk_update_failure(seq_no, &msg, last_seen_bk_update_seqno),
+    };
+
+    // (1) Attestation. L2 in the bundle MUST match the verifier's stored
+    // commitment — this is what authorises the update.
+    let attestation_verified = if l2 != state.stored_bk_set_commitment {
+        warn!(
+            "bk-update {}: L2 {} != stored commitment {} — attestation rejected without circuit run",
+            seq_no,
+            hex::encode(l2),
+            hex::encode(state.stored_bk_set_commitment),
+        );
+        false
+    } else {
+        let bk_set_hash_fr = match ipc::fr_from_hex(&req.old_bk_set_poseidon_hash_hex) {
+            Ok(fr) => fr,
+            Err(e) => {
+                return finalize_bk_update_failure(
+                    seq_no,
+                    &format!("L2 hex not decodable as Fr: {e}"),
+                    last_seen_bk_update_seqno,
+                )
+            }
+        };
+        let primary_proof_bytes = match hex::decode(&req.primary_proof_hex) {
+            Ok(b) => b,
+            Err(e) => {
+                return finalize_bk_update_failure(
+                    seq_no,
+                    &format!("invalid primary_proof_hex: {e}"),
+                    last_seen_bk_update_seqno,
+                )
+            }
+        };
+        let public_instances = vec![
+            block_id_fr,
+            bk_set_hash_fr,
+            Fr::from(req.block_seq_no as u64),
+            Fr::from(req.last_seen_bk_update_seqno as u64),
+        ];
+        match req.attestation_circuit {
+            ipc::AttestationCircuit::Primary => verifier::verify_primary_proof(
+                key_manager,
+                &primary_proof_bytes,
+                &public_instances,
+            ),
+            ipc::AttestationCircuit::Fallback => verifier::verify_fallback_proof(
+                key_manager,
+                &primary_proof_bytes,
+                &public_instances,
+            ),
+        }
+    };
+
+    // (2) Open SHA-256 Merkle: H1 = SHA(L2‖L3); H01 = SHA(H0‖H1); root = SHA(H01‖H23).
+    // Compared against the raw 32-byte chain block hash (`block_id_hash_hex`),
+    // not against `block_id_fr.to_repr()` — the chain hash is 256 bits and may
+    // exceed the BN254 Fr modulus, so the Fr public instance is a lossy
+    // 254-bit projection. Consistency between the two is enforced separately
+    // in check (2b) below.
+    let h1_calc = sha256_concat(&l2, &l3);
+    let h01_calc = sha256_concat(&h0, &h1_calc);
+    let root_calc = sha256_concat(&h01_calc, &h23);
+    let merkle_verified = root_calc == block_id_bytes;
+    if !merkle_verified {
+        warn!(
+            "bk-update {}: Merkle root mismatch — computed {} vs block_id_hash {}",
+            seq_no,
+            hex::encode(root_calc),
+            hex::encode(block_id_bytes),
+        );
+    }
+
+    // (2b) block_id_hash ↔ block_id_fr consistency. Without this, a bundle
+    // could pair one block's raw hash (used by check 2) with another block's
+    // Fr instance (bound by the Circuit 1a/1b proof in check 1). Both must
+    // refer to the same chain block.
+    //
+    // The relation the prover establishes is `block_id_fr = Σ byte_i · 256^i
+    // mod Fr_modulus` where byte_i are the chain hash bytes in LE order
+    // (`compute_block_id_fr` in bridge-prover-lib::prover). We re-run that
+    // construction here and require equality.
+    let block_id_fr_from_hash = {
+        let mut acc = Fr::zero();
+        let mut power = Fr::one();
+        let base = Fr::from(256u64);
+        for &b in &block_id_bytes {
+            acc += Fr::from(b as u64) * power;
+            power *= base;
+        }
+        acc
+    };
+    let fr_consistency_ok = block_id_fr_from_hash == block_id_fr;
+    if !fr_consistency_ok {
+        warn!(
+            "bk-update {}: block_id_fr inconsistent with block_id_hash — \
+             Fr(hash mod p) != bundled Fr instance",
+            seq_no
+        );
+    }
+
+    // (3) Monotonicity. Matches `BridgeState::apply_bk_set_update` precondition.
+    let monotonicity_ok = (req.block_seq_no as u64) > state.stored_last_bk_set_update_seq_no;
+    if !monotonicity_ok {
+        warn!(
+            "bk-update {}: not monotone (last applied = {})",
+            seq_no, state.stored_last_bk_set_update_seq_no
+        );
+    }
+
+    let verify_ok =
+        attestation_verified && merkle_verified && fr_consistency_ok && monotonicity_ok;
+    if verify_ok {
+        if let Err(e) = state.apply_bk_set_update(l2, l3, req.block_seq_no as u64) {
+            // apply_bk_set_update re-checks the preconditions; if it
+            // disagrees with what we just verified, something is racing
+            // with us. Refuse to advance and surface the error.
+            error!("bk-update {}: apply_bk_set_update failed: {}", seq_no, e);
+            let r = ipc::BkUpdateResult {
+                block_seq_no: seq_no,
+                attestation_verified,
+                merkle_verified,
+                monotonicity_ok,
+                verify_ok: false,
+                error: Some(format!("apply failed: {e}")),
+            };
+            let _ = ipc::write_bk_update_result(&r);
+            *last_seen_bk_update_seqno = seq_no;
+            return;
+        }
+        if let Err(e) = state.save(state_file) {
+            error!("bk-update {}: state save failed: {}", seq_no, e);
+        } else {
+            info!(
+                "bk-update {}: APPLIED — stored_bk_set_commitment now {}, stored_last_bk_set_update_seq_no={}",
+                seq_no,
+                hex::encode(state.stored_bk_set_commitment),
+                state.stored_last_bk_set_update_seq_no,
+            );
+        }
+    } else {
+        warn!(
+            "bk-update {}: REJECTED (attestation={}, merkle={}, fr_consistency={}, monotone={})",
+            seq_no, attestation_verified, merkle_verified, fr_consistency_ok, monotonicity_ok
+        );
+    }
+
+    let r = ipc::BkUpdateResult {
+        block_seq_no: seq_no,
+        attestation_verified,
+        merkle_verified,
+        monotonicity_ok,
+        verify_ok,
+        error: if verify_ok {
+            None
+        } else {
+            Some(format!(
+                "attestation={}, merkle={}, fr_consistency={}, monotone={}",
+                attestation_verified, merkle_verified, fr_consistency_ok, monotonicity_ok
+            ))
+        },
+    };
+    if let Err(e) = ipc::write_bk_update_result(&r) {
+        error!("bk-update {}: failed to write result file: {}", seq_no, e);
+    }
+    *last_seen_bk_update_seqno = seq_no;
+}
+
+/// Decode a 32-byte hex string into a fixed-size array, with a descriptive
+/// error message on failure.
+fn decode_hash32(hex_str: &str, field: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(hex_str).map_err(|e| format!("invalid {field}: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(format!(
+            "invalid {field}: expected 32 bytes, got {}",
+            bytes.len()
+        ));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// Helper for the early-return arms of `process_bk_update_bundle`. Records
+/// the failure result file and advances the cursor so the next poll picks
+/// up the following bundle instead of looping on this one.
+fn finalize_bk_update_failure(seq_no: u32, msg: &str, last_seen: &mut u32) {
+    error!("bk-update {}: {}", seq_no, msg);
+    write_bk_update_failure(seq_no, msg);
+    *last_seen = seq_no;
 }
 
 // =====================================================================

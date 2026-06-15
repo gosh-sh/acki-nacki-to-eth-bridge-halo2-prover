@@ -30,3 +30,6 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }
 tvm_vm = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
