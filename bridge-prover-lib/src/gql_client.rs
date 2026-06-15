@@ -451,17 +451,24 @@ impl GqlClient {
         self.query_block_by_height(DEFAULT_THREAD_ID_HEX, seqno).await
     }
 
-    /// Build a `ParsedAttestation` for the block at `target_seq_no` by reading
-    /// the target block's own `Block.attestations[]` field.
-    /// the resolver filters `Block.attestations[]` so it returns only entries
-    /// whose inner `AttestationData.block_id == self.id`, i.e. attestations
-    /// FOR THIS block. The producer's common section still owns the row, but
-    /// the GQL view is now consumer-oriented: "give me the attestation that
-    /// signed block N" → query block N directly.
-    pub async fn query_attestation_envelope(
+    /// Fetch ALL `Block.attestations[]` entries for the block at
+    /// `target_seq_no` and parse each into a `ParsedAttestation`.
+    ///
+    /// On primary-finalized blocks this returns exactly one entry of
+    /// `target_type=PRIMARY` (≥66% signers). On fallback-finalized blocks it
+    /// returns two entries sharing the same `block_id`: one `PRIMARY`
+    /// prefinalization (≥50%+1) and one `FALLBACK` target proof (≥50%+1).
+    /// Higher-level shape classification lives in
+    /// `attestation_fetcher::fetch_attestation_evidence`.
+    ///
+    /// The resolver filters `Block.attestations[]` so every entry already
+    /// targets `self.id`; we still surface any unparseable entry as an error
+    /// rather than silently dropping it so a malformed row can't masquerade
+    /// as a primary-only block.
+    pub async fn query_attestation_envelopes(
         &self,
         target_seq_no: u64,
-    ) -> anyhow::Result<crate::attestation_fetcher::ParsedAttestation> {
+    ) -> anyhow::Result<Vec<crate::attestation_fetcher::ParsedAttestation>> {
         let q = format!(
             r#"{{ blockchain {{ blockByHeight(thread_id: "{DEFAULT_THREAD_ID_HEX}", height: {target_seq_no}) {{ seq_no attestations {{ block_id parent_block_id target_type envelope_hash aggregated_signature signature_occurrences }} }} }} }}"#
         );
@@ -486,19 +493,27 @@ impl GqlClient {
                  Retry once a few blocks have been produced past it."
             );
         }
-        // After the fix, every entry on this block already targets self.id, but
-        // be defensive and pick the first parseable one.
-        let mut last_err: Option<anyhow::Error> = None;
-        for att_json in atts {
-            match parse_block_attestation(att_json) {
-                Ok(att) => return Ok(att),
-                Err(e) => last_err = Some(e),
-            }
+        atts.iter()
+            .map(parse_block_attestation)
+            .collect::<anyhow::Result<Vec<_>>>()
+            .with_context(|| format!("parse_block_attestation for block {target_seq_no}"))
+    }
+
+    /// Legacy single-attestation accessor kept for callers that still want
+    /// the v2 shape. Picks the `PRIMARY`-typed entry if one exists, else
+    /// returns the first parseable entry (preserving the previous "be
+    /// defensive" behavior).
+    pub async fn query_attestation_envelope(
+        &self,
+        target_seq_no: u64,
+    ) -> anyhow::Result<crate::attestation_fetcher::ParsedAttestation> {
+        let mut atts = self.query_attestation_envelopes(target_seq_no).await?;
+        if let Some(idx) = atts.iter().position(|a| a.target_type == 0) {
+            return Ok(atts.swap_remove(idx));
         }
-        Err(last_err.unwrap_or_else(|| {
-            anyhow::format_err!("no parseable attestation in block {target_seq_no}")
-        }))
-        .with_context(|| format!("parse_block_attestation for block {target_seq_no}"))
+        atts.into_iter()
+            .next()
+            .ok_or_else(|| anyhow::format_err!("no attestations on block {target_seq_no}"))
     }
 }
 
