@@ -1,12 +1,19 @@
 //! TVM Bag-of-Cells flattening.
 //!
-//! Ported from `bridge-event-prove-circuit::boc_helper`. The walk logic only
-//! depends on `tvm_types::Cell` — no halo2 — so we keep a local copy here to
-//! avoid pulling the entire circuits crate (and its halo2 transitive deps)
-//! into this exporter.
+//! Byte-for-byte port of `bridge-event-prove-circuit::boc_helper`. We keep
+//! a local copy because the prover and circuits workspaces pin **different**
+//! git sources for `tvm-sdk` (different URLs / branches / commits). Cargo
+//! treats same-version crates from different git sources as *distinct*
+//! types, so calling the upstream `serialize_cells_tree_root_first` with a
+//! `Cell` constructed by *our* `tvm_types` fails to type-check
+//! (`expected ... found a different tvm_types::cell::Cell`). The local copy
+//! sidesteps that by living inside this crate and only ever seeing our
+//! `tvm_types`.
 //!
-//! If we ever factor BOC utilities into a small no-halo2 shared crate, both
-//! consumers can switch over and this module can be deleted.
+//! When the two workspaces converge on a single `tvm-sdk` pin, this module
+//! can be deleted and callers switched to
+//! `bridge_event_prove_circuit::boc_helper::{serialize_cells_tree_root_first,
+//! BocFlattenData}`.
 
 use std::collections::{HashSet, VecDeque};
 
