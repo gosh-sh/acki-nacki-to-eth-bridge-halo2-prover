@@ -157,7 +157,7 @@ What's not done yet (planned next):
 
 - 🔲 **Ethereum submitter.** A small helper (likely a `web3.py` script or a Rust binary using `ethers-rs`) that takes the proof file and posts a `proveWithdrawal(...)` transaction to the Ethereum bridge contract.
 - 🔲 **`bridge-event-witness-builder` rewrite.** Today it builds the Circuit-4 witness against the off-chain `bridge-verifier-daemon`'s mirror state. The rewrite will read the Ethereum bridge contract's `layerWindows` storage directly, so the stub no longer depends on running an off-chain verifier daemon.
-- 🔲 **`bridge-prover-daemon` ETH-submission mode.** A variant (or extra mode) of the existing `bridge-prover-daemon` that posts the per-bundle Circuit 1A + Circuit 2 proofs to the Ethereum contract via `verifyBlock(...)` instead of writing them to disk for the modelling verifier daemon to read.
+- 🔲 **`bridge-prover-daemon` ETH-submission mode.** A variant (or extra mode) of the existing `bridge-prover-daemon` that posts the per-bundle attestation proof (Circuit 1A *or* 1B, selected by the daemon's path classifier — see [`docs/fallback_path.md`](./docs/fallback_path.md)) + Circuit 2 proof to the Ethereum contract via `verifyBlock(...)` instead of writing them to disk for the modelling verifier daemon to read.
 
 Once all three land, this stub becomes the real end-to-end happy path against a live Ethereum bridge contract.
 

@@ -1,9 +1,15 @@
 # bridge-prover-daemon
 
 Long-running daemon that produces halo2 KZG proofs for the bridge's
-**state-update path** — Circuit 1A (Primary BLS Attestation, K=20) and
+**state-update path** — Circuit 1A *or* 1B (BLS Attestation, K=20) and
 Circuit 2 (Layer Historical Hashes, K=17). Pairs with
 `bridge-verifier-daemon` over the filesystem (`proofs/` ↔ `state/`).
+
+The daemon classifies each key block as **Primary** (one ≥2N/3
+attestation → Circuit 1A) or **Fallback** (paired ≥N/2+1 PRIMARY +
+FALLBACK attestations over the same `block_id` → Circuit 1B). See
+[`docs/fallback_path.md`](../docs/fallback_path.md) for the classifier
+contract and operational notes.
 
 This README is a standalone runbook for exercising the prover/verifier
 pair **without event proving** (Circuit 4) — useful for testing the
@@ -80,15 +86,18 @@ position.
 ### What each daemon does
 
 - **bridge-prover-daemon** — Polls GraphQL for new key blocks. For
-  each one: fetches the BLS attestation, runs **Circuit 1A** (proves
-  ≥⌈2n/3⌉ signatures from the current BK set, binds `block_id` to
-  `bk_set_poseidon`), then **Circuit 2** (proves via a SHA-256 Merkle
-  path under `block_id` the three block fields whose Poseidon hash is
-  the layer-0 leaf, then walks a dense Poseidon chain across
-  intermediate key blocks to advance the layer windows consistently).
-  Writes one `proofs/proof_<seq>.json` per processed key block.
-  Proving keys are loaded on demand, then unloaded — peak RSS stays
-  near the largest of the three PKs.
+  each one: fetches the BLS attestation evidence, classifies it as
+  Primary (one ≥⌈2n/3⌉ attestation) or Fallback (paired ≥n/2+1
+  PRIMARY + FALLBACK attestations over the same `block_id`), runs
+  the matching attestation circuit (**1A** Primary or **1B** Fallback,
+  same K=20 shape, same 4-public-instance layout, different VK), then
+  **Circuit 2** (proves via a SHA-256 Merkle path under `block_id` the
+  three block fields whose Poseidon hash is the layer-0 leaf, then
+  walks a dense Poseidon chain across intermediate key blocks to
+  advance the layer windows consistently). Writes one
+  `proofs/proof_<seq>.json` per processed key block, tagged with the
+  attestation circuit used. Proving keys are loaded on demand, then
+  unloaded — peak RSS stays near the largest single PK.
 - **bridge-verifier-daemon** — Watches `proofs/`, KZG-verifies each
   proof against cached VKs, and on success applies the proof's layer
   transitions to its own `state/verifier_state.json` (the off-chain
@@ -132,7 +141,7 @@ for the catalogue of chain shapes and slack analysis.
 ## Prerequisites
 
 - **Rust nightly** (release builds).
-- **~10 GB disk** under `params/` (KZG SRS + three PKs — Circuit 4's PK is needed only at keygen, but its VK must exist for the verifier).
+- **~14 GB disk** under `params/` (KZG SRS + four PKs: Circuit 1A primary, 1B fallback, Circuit 2 layer, Circuit 4 event — the latter's PK is needed only at keygen, but its VK must exist for the verifier).
 - **~16 GB RAM** at proof generation.
 - For local devnet only:
   - **Docker / docker compose**.
@@ -282,7 +291,7 @@ If you launched via `scripts/run-bridge-test.sh`, use `scripts/stop-bridge-test.
 | Symptom | Fix |
 |---|---|
 | Verifier exits with `"event VK not found"` | Run Step 2's `--selftest` command once. |
-| Verifier exits with `"primary VK not found"` / `"layer VK not found"` | Let `bridge-prover-daemon` finish its first start — it generates 1A/2 keys on disk (~10 min). |
+| Verifier exits with `"primary VK not found"` / `"fallback VK not found"` / `"layer VK not found"` | Let `bridge-prover-daemon` finish its first start — it generates 1A/1B/2 keys on disk (~15 min, all four PKs sized). |
 | Circuit 1A fails with ~96 BLS pairing equality constraint violations | `bk_set.json` is stale relative to the live chain. Re-sync (Step 3) or delete the file to force a GQL fetch. |
 | Prover never starts proving — seed seqno keeps moving | Should not happen post-2026-05-23 (seed is pinned once at startup). Workaround: pin manually via `BRIDGE_BOOTSTRAP_SEQNO=<next W·P boundary past chain head>`. |
 | Verifier state shows old `last_key_block` after switching networks | Wipe `state/` on **both** daemons together — the verifier never re-reads `bootstrap_seed.json` after first init. |

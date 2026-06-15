@@ -80,6 +80,13 @@ Both halves of the system are **file-based**: `proofs/proof_NNN.json` is the pro
 
 **On-demand PK loading.** Each proving key is ~3 GB. The prover loads one circuit's PK, generates a proof, then unloads before loading the next — peak RSS stays around 14 GB instead of 22+.
 
+**Path selection (Primary 1a vs Fallback 1b).** Acki Nacki's consensus has two finalisation paths — Primary (≥2N/3 signers within β blocks) and Fallback (two ≥N/2+1 attestations over the same `block_id`, used when the primary deadline is missed). The prover daemon classifies each key block's `Block.attestations[]` GraphQL response by structure:
+
+- 1 entry with `target_type == PRIMARY` → Circuit 1a (`generate_primary_proof`).
+- 2 entries (`PRIMARY` prefinalization + `FALLBACK` target proof, same `block_id`) → Circuit 1b (`generate_fallback_proof`).
+
+Classification is **structural**, not heuristic — the threshold checks (≥2N/3 vs >N/2) are enforced in-circuit. Both circuits emit the same 4-public-instance shape `[block_id, bk_set_commitment, block_seq_no, last_seen]`; the `attestation_circuit` tag in `proof_NNN.json` tells the verifier which VK to use. See [docs/fallback_path.md](docs/fallback_path.md) for the full classifier rules and operational notes.
+
 ---
 
 ## Binary roles & state ownership
@@ -418,9 +425,11 @@ kill $(cat logs/pids.txt | cut -d= -f2)
 
 ```json
 {
+  "schema_version": 3,
   "block_seq_no": 1536,
   "last_seen_block_seqno": 1024,
   "block_id_hex": "…",
+  "attestation_circuit": "primary",   // or "fallback" — picks the VK (1a vs 1b)
   "primary_proof_hex": "…",   "primary_proof_gen_ms": 102392,
   "layer_proof_hex":   "…",   "layer_proof_gen_ms":   137310,
   "layer_block_id_hex": "…",
@@ -430,6 +439,8 @@ kill $(cat logs/pids.txt | cut -d= -f2)
   "prev_max_level_layer_hash_hex": "…"
 }
 ```
+
+`attestation_circuit` is the **path-selection tag** (see [docs/fallback_path.md](docs/fallback_path.md)). The 4-public-instance layout is identical for 1a and 1b; only the verifying key differs. Schema v3 added this tag; legacy v2 files deserialise as `"primary"`.
 
 ### `proofs/proof_event_NNN.json` (Circuit 4, local devnet only)
 
@@ -533,15 +544,11 @@ cargo test -p bridge-event-prover-lib --test event_prover       -- --nocapture  
 
 Pending items the current production path is missing — none block today's E2E happy path, but each will be needed before the bridge is real-world hardened.
 
-### 1. Circuit 1B (Fallback Attestation) wiring
-
-Today `bridge-prover-daemon` only emits Circuit 1A (Primary). The companion `attestation-bls-checker-circuit/src/fallback_circuit.rs` ([circuits repo](https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits/blob/main/attestation-bls-checker-circuit/src/fallback_circuit.rs)) handles the case where no single >2/3 attestation exists — it verifies two ≥50% attestations (Primary + Fallback type) over the same `block_id`. Same K=20 shape, same public-instance layout as 1A (see [circuits README](https://github.com/gosh-sh/acki-nacki-to-eth-bridge-halo2-circuits#the-five-circuits)). Needed before mainnet to keep relaying through periods of producer dissent. Wiring touches `bridge-prover-lib` (key manager, prover dispatch), `bridge-prover-daemon` (decide 1A vs 1B per key block from attestation evidence), and `bridge-verifier-daemon` (accept either flavor on the same code path).
-
-### 2. Circuit 3 (BK Set Update) wiring
+### 1. Circuit 3 (BK Set Update) wiring
 
 Likewise not on the daemon path yet. Circuit 3 proves that applying the on-chain "effective changes" to the old BK-set Poseidon commitment (L2) yields the new one (L3), both sitting under `H_1` of the block-id Merkle tree. K=16, public instances `[block_id, poseidon_old, poseidon_new]`. Must run **on every key block whose BK set differs from the previous one** — otherwise the verifier's `stored_bk_set_commitment` cannot advance and the next Circuit 1A/1B will fail on commitment mismatch. Wiring: detect BK-set delta in the prover daemon, generate the proof alongside the 1A+2 bundle, extend the verifier-daemon to consume it and roll `storedBkSetCommitment` forward.
 
-### 3. Event anchoring beyond nearest L1
+### 2. Event anchoring beyond nearest L1
 
 **Current state — confirmed.** `bridge-event-witness-builder` hard-codes `layer_idx = 0` and rejects anything else (`main.rs` line ~223). The Python orchestrator's `target_seq = thinned_kb_seq` math is the matching client-side consequence: a withdrawal must wait for the **next thinned L1 key block past the event** to be relayed, then is bound directly to that L1 layer hash. `bridge-event-prover-lib` and `bridge-prover-lib` together produce a Circuit 4 witness whose `dense_chain` carries **only inactive padding** to `MAX_CHAIN_LEN = 11` — i.e. zero hops up to a higher layer; the L1 root *is* the anchor.
 
