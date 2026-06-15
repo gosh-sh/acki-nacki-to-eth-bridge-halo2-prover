@@ -4,7 +4,7 @@ use anyhow::Context;
 use halo2_base::halo2_proofs::{
     dev::MockProver,
     halo2curves::bn256::{Bn256, Fr, G1Affine},
-    plonk::create_proof,
+    plonk::{create_proof, Circuit, ProvingKey},
     poly::kzg::{commitment::KZGCommitmentScheme, multiopen::ProverSHPLONK},
     transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
 };
@@ -12,6 +12,7 @@ use rand::rngs::OsRng;
 use tracing::{info, warn};
 
 use attestation_bls_checker_circuit::primary_circuit::PrimaryAttestationBlsCheckerCircuit;
+use attestation_bls_checker_circuit::fallback_circuit::FallbackAttestationBlsCheckerCircuit;
 use bridge_parsers::attestation_data_parser::{
     attestation_data_offset, parse_num_signers,
 };
@@ -95,7 +96,122 @@ pub fn generate_primary_proof(
         }
     }
 
-    let instance_refs: &[&[Fr]] = &[&instances];
+    let proof_bytes = run_kzg_create_proof(
+        key_manager,
+        key_manager.primary_pk(),
+        circuit,
+        &instances,
+    )?;
+
+    Ok(ProofOutput {
+        proof_bytes,
+        block_id_fr,
+        bk_set_commitment_fr,
+        block_seq_no,
+        last_seen_block_seqno,
+    })
+}
+
+/// Generate a fallback attestation proof (Circuit 1b).
+///
+/// Consumes both attestations from the fallback evidence pair:
+///   * `attestation_primary_bytes`  — PRIMARY-type prefinalization (>N/2 signers)
+///   * `attestation_fallback_bytes` — FALLBACK-type target proof  (>N/2 signers)
+///
+/// Both share the same `block_id`; that equality is enforced in-circuit by
+/// `FallbackAttestationBlsCheckerCircuit`. The public-instance shape is
+/// identical to Circuit 1a (`[block_id, bk_set_commitment, block_seq_no,
+/// last_seen]`), so downstream verifiers and IPC consumers only need to
+/// discriminate via the verifying key (1a vs 1b) — not via instance layout.
+pub fn generate_fallback_proof(
+    key_manager: &KeyManager,
+    attestation_primary_bytes: &[u8],
+    attestation_fallback_bytes: &[u8],
+    bk_set: &HashMap<u16, Vec<u8>>,
+    last_seen_block_seqno: u32,
+) -> anyhow::Result<ProofOutput> {
+    let limb_bits = keys::circuit_limb_bits();
+    let num_limbs = keys::circuit_num_limbs();
+
+    // Public instances are derived from the PRIMARY half of the pair; the
+    // FALLBACK half is constrained in-circuit to share the same block_id.
+    let block_id_fr = compute_block_id_fr(attestation_primary_bytes);
+    let (bk_set_commitment_fr, _) = compute_bk_set_poseidon(bk_set);
+    let block_seq_no = extract_block_seq_no(attestation_primary_bytes);
+    let block_seq_no_fr = Fr::from(block_seq_no as u64);
+    let last_seen_fr = Fr::from(last_seen_block_seqno as u64);
+
+    info!(
+        "generating fallback proof: block_seq_no={}, last_seen={}, bk_set_size={}, \
+         primary_sig_len={}, fallback_sig_len={}",
+        block_seq_no, last_seen_block_seqno, bk_set.len(),
+        attestation_primary_bytes.len(), attestation_fallback_bytes.len(),
+    );
+
+    let mut circuit = FallbackAttestationBlsCheckerCircuit::<Fr>::new(
+        attestation_primary_bytes.to_vec(),
+        attestation_fallback_bytes.to_vec(),
+        bk_set.clone(),
+        last_seen_block_seqno,
+        keys::circuit_k() as usize,
+        keys::circuit_num_unusable_rows(),
+        keys::circuit_lookup_bits(),
+        limb_bits,
+        num_limbs,
+        keys::circuit_max_signers(),
+    );
+    circuit.override_base_circuit_params(key_manager.fallback_config().clone());
+
+    let instances = vec![block_id_fr, bk_set_commitment_fr, block_seq_no_fr, last_seen_fr];
+
+    if std::env::var("BRIDGE_MOCK_PROVE").ok().as_deref() == Some("1") {
+        let k = keys::circuit_k();
+        info!("BRIDGE_MOCK_PROVE=1: running MockProver (fallback) at k={}...", k);
+        let t = std::time::Instant::now();
+        match MockProver::run(k, &circuit, vec![instances.clone()]) {
+            Ok(prover) => match prover.verify() {
+                Ok(()) => info!("MockProver (fallback) verify OK ({:?})", t.elapsed()),
+                Err(failures) => {
+                    warn!("MockProver (fallback) verify FAILED ({:?}): {} failure(s)",
+                          t.elapsed(), failures.len());
+                    for (i, f) in failures.iter().take(10).enumerate() {
+                        warn!("  failure[{}]: {:?}", i, f);
+                    }
+                }
+            },
+            Err(e) => warn!("MockProver::run errored: {:?}", e),
+        }
+    }
+
+    let proof_bytes = run_kzg_create_proof(
+        key_manager,
+        key_manager.fallback_pk(),
+        circuit,
+        &instances,
+    )?;
+
+    Ok(ProofOutput {
+        proof_bytes,
+        block_id_fr,
+        bk_set_commitment_fr,
+        block_seq_no,
+        last_seen_block_seqno,
+    })
+}
+
+/// Shared KZG/SHPLONK/Blake2b proof core. The two attestation circuits
+/// (1a Primary, 1b Fallback) differ only in their constraint system and
+/// proving key; the transcript / multiopen / commitment scheme is identical.
+fn run_kzg_create_proof<C>(
+    key_manager: &KeyManager,
+    pk: &ProvingKey<G1Affine>,
+    circuit: C,
+    instances: &[Fr],
+) -> anyhow::Result<Vec<u8>>
+where
+    C: Circuit<Fr>,
+{
+    let instance_refs: &[&[Fr]] = &[instances];
     let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(vec![]);
     create_proof::<
         KZGCommitmentScheme<Bn256>,
@@ -106,22 +222,14 @@ pub fn generate_primary_proof(
         _,
     >(
         &key_manager.srs,
-        key_manager.primary_pk(),
+        pk,
         &[circuit],
         &[instance_refs],
         OsRng,
         &mut transcript,
     )
     .context("proof generation failed")?;
-    let proof_bytes = transcript.finalize();
-
-    Ok(ProofOutput {
-        proof_bytes,
-        block_id_fr,
-        bk_set_commitment_fr,
-        block_seq_no,
-        last_seen_block_seqno,
-    })
+    Ok(transcript.finalize())
 }
 
 /// Extract block_id as Fr from raw attestation bytes.

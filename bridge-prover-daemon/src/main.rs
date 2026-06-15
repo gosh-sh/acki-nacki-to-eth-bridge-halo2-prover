@@ -44,7 +44,7 @@ use bridge_prover_lib::Fr;
 use bridge_prover_lib::THINNING_FACTOR_P;
 use halo2_base::halo2_proofs::halo2curves::group::ff::PrimeField;
 
-use bridge_prover_lib::attestation_fetcher;
+use bridge_prover_lib::attestation_fetcher::{self, AttestationEvidence};
 use bridge_prover_lib::bootstrap::{self, BootstrapSeed};
 use bridge_prover_lib::bridge_state::BridgeState;
 #[cfg(feature = "self-verify")]
@@ -174,9 +174,11 @@ async fn main() -> anyhow::Result<()> {
     info!("loading keys...");
     let mut key_manager = KeyManager::new(Path::new(PARAMS_DIR));
     key_manager.ensure_primary_keys(&bk_set)?;
-    info!("primary keys ready");
+    info!("primary (1a) keys ready");
+    key_manager.ensure_fallback_keys(&bk_set)?;
+    info!("fallback (1b) keys ready");
     key_manager.ensure_layer_keys()?;
-    info!("layer keys ready");
+    info!("layer (2) keys ready");
 
     // 4. Load or create state.
     let mut state = BridgeState::load(STATE_FILE, HISTORY_WINDOW_SIZE as usize)?;
@@ -305,31 +307,30 @@ async fn main() -> anyhow::Result<()> {
         let target_seqno = next_key_seqno.unwrap();
         info!("=== Processing key block at height {} ===", target_seqno);
 
-        // Fetch attestation for key block (Circuit 1a input).
-        let attestation = match attestation_fetcher::fetch_attestation_for_block(
+        // Fetch and classify attestation evidence for the key block.
+        //
+        // Detection is structural (count + target_type), not heuristic — see
+        // `attestation_fetcher::fetch_attestation_evidence` docs. Threshold
+        // enforcement (≥2N/3 for 1a, >N/2 for 1b) lives inside the circuits;
+        // here we only choose which circuit to run.
+        let evidence = match attestation_fetcher::fetch_attestation_evidence(
             &gql, target_seqno as u32,
         ).await {
-            Ok(att) => att,
+            Ok(ev) => ev,
             Err(e) => {
-                warn!("key block {}: attestation not available ({}), retrying...", target_seqno, e);
+                warn!("key block {}: attestation evidence not ready ({}), retrying...", target_seqno, e);
                 tokio::time::sleep(SLEEP_ON_RETRY).await;
                 continue;
             }
         };
 
-        if attestation.target_type != 0 {
-            info!("key block {}: fallback attestation, skipping", target_seqno);
-            // Move past this key block (cursor advance only, no layer append).
-            state.stored_last_seen_block_seq_no = target_seqno;
-            state.stored_last_seen_block_height = target_seqno;
-            state.save(STATE_FILE)?;
-            continue;
-        }
-
-        // Verify signers are in BK set.
-        let missing: Vec<u16> = attestation.signature_occurrences.keys()
+        // Defensive BK-set-membership warning. In-circuit checks are
+        // authoritative; this just surfaces obviously-stale BK sets earlier.
+        let signer_indices = evidence.signer_indices();
+        let missing: Vec<u16> = signer_indices
+            .iter()
             .filter(|idx| !bk_set.contains_key(idx))
-            .cloned()
+            .copied()
             .collect();
         if !missing.is_empty() {
             warn!("key block {}: signers {:?} not in BK set, skipping", target_seqno, missing);
@@ -341,39 +342,72 @@ async fn main() -> anyhow::Result<()> {
 
         let t_proof = Instant::now();
 
-        // ---- Circuit 1a: Primary Attestation Proof ----
-        // Load PK on demand, unload after to free ~3.7 GB before Circuit 2.
-        info!("key block {}: loading primary PK...", target_seqno);
-        key_manager.load_primary_pk()?;
-
-        info!("key block {}: generating Circuit 1a proof...", target_seqno);
+        // ---- Circuit 1a or 1b: Attestation Proof ----
+        // Dispatch on the classified evidence. Each branch loads its own PK
+        // on demand and unloads immediately after so we stay within the
+        // ~3.7 GB single-PK memory envelope before Circuit 2.
         let t_primary = Instant::now();
-        let primary_proof = match prover::generate_primary_proof(
-            &key_manager,
-            &attestation.raw_bytes,
-            &bk_set,
-            state.stored_last_seen_block_seq_no as u32,
-        ) {
-            Ok(output) => {
-                stats.primary_proofs_ok += 1;
+        let (attestation_circuit_tag, primary_proof) = match &evidence {
+            AttestationEvidence::Primary(att) => {
+                info!("key block {}: PRIMARY path → Circuit 1a", target_seqno);
+                info!("key block {}: loading primary PK...", target_seqno);
+                key_manager.load_primary_pk()?;
+                let res = prover::generate_primary_proof(
+                    &key_manager,
+                    &att.raw_bytes,
+                    &bk_set,
+                    state.stored_last_seen_block_seq_no as u32,
+                );
                 key_manager.unload_primary_pk();
-                output
+                match res {
+                    Ok(output) => {
+                        stats.primary_proofs_ok += 1;
+                        (ipc::AttestationCircuit::Primary, output)
+                    }
+                    Err(e) => {
+                        error!("key block {}: Circuit 1a proof failed: {}", target_seqno, e);
+                        stats.verification_failed += 1;
+                        stats.key_blocks_processed += 1;
+                        state.stored_last_seen_block_seq_no = target_seqno;
+                        state.stored_last_seen_block_height = target_seqno;
+                        state.save(STATE_FILE)?;
+                        continue;
+                    }
+                }
             }
-            Err(e) => {
-                error!("key block {}: Circuit 1a proof failed: {}", target_seqno, e);
-                key_manager.unload_primary_pk();
-                stats.verification_failed += 1;
-                stats.key_blocks_processed += 1;
-                state.stored_last_seen_block_seq_no = target_seqno;
-                state.stored_last_seen_block_height = target_seqno;
-                state.save(STATE_FILE)?;
-                continue;
+            AttestationEvidence::Fallback { primary, fallback } => {
+                info!("key block {}: FALLBACK path → Circuit 1b", target_seqno);
+                info!("key block {}: loading fallback PK...", target_seqno);
+                key_manager.load_fallback_pk()?;
+                let res = prover::generate_fallback_proof(
+                    &key_manager,
+                    &primary.raw_bytes,
+                    &fallback.raw_bytes,
+                    &bk_set,
+                    state.stored_last_seen_block_seq_no as u32,
+                );
+                key_manager.unload_fallback_pk();
+                match res {
+                    Ok(output) => {
+                        stats.primary_proofs_ok += 1;
+                        (ipc::AttestationCircuit::Fallback, output)
+                    }
+                    Err(e) => {
+                        error!("key block {}: Circuit 1b proof failed: {}", target_seqno, e);
+                        stats.verification_failed += 1;
+                        stats.key_blocks_processed += 1;
+                        state.stored_last_seen_block_seq_no = target_seqno;
+                        state.stored_last_seen_block_height = target_seqno;
+                        state.save(STATE_FILE)?;
+                        continue;
+                    }
+                }
             }
         };
         let primary_proof_gen_ms = t_primary.elapsed().as_millis() as u64;
         info!(
-            "key block {}: Circuit 1a proof generated in {} ms",
-            target_seqno, primary_proof_gen_ms
+            "key block {}: {:?} proof generated in {} ms",
+            target_seqno, attestation_circuit_tag, primary_proof_gen_ms
         );
 
         // ---- Circuit 2: Layer Hashes Movement Proof ----
@@ -454,6 +488,9 @@ async fn main() -> anyhow::Result<()> {
             block_height: observed_height,
             last_seen_block_seqno: state.stored_last_seen_block_seq_no as u32,
             block_id_hex: ipc::fr_to_hex(&primary_proof.block_id_fr),
+            // Tag the proof with whichever attestation circuit produced it
+            // so the verifier picks the matching VK (1a Primary vs 1b Fallback).
+            attestation_circuit: attestation_circuit_tag,
             primary_proof_hex: hex::encode(&primary_proof.proof_bytes),
             layer_proof_hex: hex::encode(&layer_proof.proof_bytes),
             layer_block_id_hex: ipc::fr_to_hex(&layer_proof.block_id_fr),
