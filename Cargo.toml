@@ -3,10 +3,9 @@ members = [
     "bridge-prover-lib",
     "bridge-prover-daemon",
     "bridge-verifier-daemon",
-    "bridge-event-private-witness-export",
+    "bridge-event-witness",
     "bridge-event-prover-lib",
     "bridge-event-halo2-prover",
-    "bridge-event-witness-builder",
 ]
 resolver = "2"
 

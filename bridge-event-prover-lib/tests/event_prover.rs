@@ -8,7 +8,7 @@
 //! validation guardrails `build_proof_inputs` enforces against an
 //! ill-formed daemon-side anchor.
 
-use bridge_event_private_witness_export::{
+use bridge_event_witness::{
     export_from_event_boc_base64,
     schema::{
         AnchorRef, DenseChainLinkSer, MerkleProofData, PrivateWitness, SCHEMA_VERSION,
@@ -19,10 +19,10 @@ use bridge_event_prove_circuit::bridge_event_prove_circuit::TOTAL_PUBLIC_INPUTS;
 use bridge_event_prover_lib::{build_proof_inputs, default_event_circuit_params};
 use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 
-// Reused from the golden_withdrawal.rs fixture — first record of the
+// Reused from the test_withdrawal.rs fixture — first record of the
 // upstream `withdrawals.txt`. Inlining keeps the test hermetic.
 const EVENT_BOC_B64: &str = "te6ccgEBBAEAyQABn+AA0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmoAAAAAAAIZdmoHXvdgAQJwPIOJWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAA9CQAAAAAIDAgBDgAm3yq/MUPIYsiAFU9xmlVK1j7ShCFBTfqlHoaqgQg+0MAAodC01zGY0wFMpJaO4RLxFTkQ49E4=";
-// NOTE: keep this string identical to bridge-event-private-witness-export/tests/golden_withdrawal.rs.
+// NOTE: keep this string identical to bridge-event-witness/tests/test_withdrawal.rs.
 
 const EXPECTED_TOKEN_ID: u32 = 2;
 

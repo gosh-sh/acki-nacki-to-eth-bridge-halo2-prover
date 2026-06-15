@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 
-use bridge_event_private_witness_export::{
+use bridge_event_witness::{
     export_from_event_boc_base64, BlockContextInput,
 };
 

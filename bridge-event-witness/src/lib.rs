@@ -1,25 +1,32 @@
-//! Exporter for the per-transaction private witness data Circuit 4 needs to
-//! prove a `WithdrawalInitiated` event from `TokenBridge.sol`.
+//! Per-transaction private witness data Circuit 4 needs to prove a
+//! `WithdrawalInitiated` event from `TokenBridge.sol`.
 //!
-//! Track B in the Circuit 4 / event-proof integration plan. Output schema
-//! pinned at `schema_version = 1` in [`schema::SCHEMA_VERSION`].
+//! Output schema pinned at `schema_version = 1` in [`schema::SCHEMA_VERSION`].
 //!
-//! Inputs the exporter understands today:
+//! ### Library API
+//!
+//! [`export_from_event_boc_base64`] — hermetic exporter. Inputs:
 //!   * Base64-encoded `Message` BOC of the ExtOut event (matches the format
 //!     of `bridge-event-prove-circuit/withdrawals.txt`)
 //!   * Block-level context (block_id, account_dapp_id, account_id, envelope
 //!     hash) — supplied by the caller; the exporter cannot derive these from
 //!     the event BOC alone.
 //!
-//! Outputs the exporter does **not** fill in yet (left `None`, populated by
-//! the daemon in Track D):
+//! Three fields it leaves `None`, populated by the enrichment binary
+//! (`bin/build.rs`):
 //!   * `events_tree_proof` — Merkle proof from `ext_msg_leaf` to
 //!     `ext_out_messages_root`
 //!   * `block_tree_proof`  — Merkle proof from `block_leaf` to `root_1`
 //!   * `anchor`             — verifier-state-derived layer hash + dense chain
 //!
-//! Library API: [`export_from_event_boc_base64`]. CLI: see
-//! `bin/exporter.rs`.
+//! ### Binaries
+//!
+//!   * `bridge-event-private-witness-export` (`bin/export.rs`) — hermetic
+//!     CLI wrapper over [`export_from_event_boc_base64`]. No GQL, no state.
+//!   * `bridge-event-witness-builder` (`bin/build.rs`) — daemon-side
+//!     enrichment: reads a partial `PrivateWitness` JSON, queries GQL +
+//!     bridge state, writes an enriched `PrivateWitness` JSON the Halo2
+//!     prover can consume.
 
 pub mod boc_walk;
 pub mod event_decode;

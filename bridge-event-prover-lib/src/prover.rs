@@ -1,9 +1,8 @@
 //! Circuit 4 (Event Prove — `WithdrawalInitiated`) proof generation.
 //!
-//! Track C in the Circuit 4 integration plan. Bridges the JSON schema
-//! produced by `bridge-event-private-witness-export` (Track B) to the
+//! Bridges the JSON schema
+//! produced by `bridge-event-private-witness-export` to the
 //! `bridge-event-prove-circuit::BridgeEventProveCircuit` halo2 circuit
-//! (Track A).
 //!
 //! Two responsibilities:
 //!   1. **Input conversion** — deserialize the witness JSON, hex-decode
@@ -24,9 +23,7 @@
 //!
 //! The witness's `anchor.layer_hash_hex` becomes the proof's
 //! `PUB_FINAL_ROOT` instance slot. The circuit computes `final_root` by
-//! climbing the supplied dense chain and exposes that value publicly. The
-//! bridge has no anonymization goal, so there is no `hash_choice_index`
-//! and no `NUM_LAYER_HASHES`-wide candidate vector — the verifier simply
+//! climbing the supplied dense chain and exposes that value publicly. The verifier simply
 //! checks `final_root` against its current mirror of `layer_windows`
 //! off-circuit.
 
@@ -60,8 +57,8 @@ use bridge_event_prove_circuit::test_helpers::{
 pub use halo2_base::gates::circuit::BaseCircuitParams;
 
 // Re-export the witness JSON types so the daemon doesn't need to pull
-// `bridge-event-private-witness-export` directly.
-pub use bridge_event_private_witness_export::schema::{
+// `bridge-event-witness` directly.
+pub use bridge_event_witness::schema::{
     AnchorRef, BlockContext, CellRecord, DenseChainLinkSer, MerkleProofData,
     PrivateWitness, WithdrawalInitiated, SCHEMA_VERSION,
 };

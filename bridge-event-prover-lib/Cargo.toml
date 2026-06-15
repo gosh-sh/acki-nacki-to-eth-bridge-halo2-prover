@@ -5,10 +5,10 @@ edition = "2021"
 
 # Circuit 4 (Event Prove — WithdrawalInitiated) library.
 #
-# Translates the `PrivateWitness` JSON schema produced by
-# `bridge-event-private-witness-export` + `bridge-event-witness-builder`
-# into a `BridgeEventProveCircuit` and drives proof generation /
-# verification.
+# Translates the `PrivateWitness` JSON schema produced by the
+# `bridge-event-private-witness-export` and `bridge-event-witness-builder`
+# binaries (both in the `bridge-event-witness` crate) into a
+# `BridgeEventProveCircuit` and drives proof generation / verification.
 #
 # Borrows the on-demand PK/VK/SRS lifecycle from `bridge-prover-lib`'s
 # `KeyManager` — there is no separate key cache here.
@@ -16,7 +16,7 @@ edition = "2021"
 [dependencies]
 bridge-prover-lib = { workspace = true }
 bridge-event-prove-circuit = { workspace = true }
-bridge-event-private-witness-export = { path = "../bridge-event-private-witness-export" }
+bridge-event-witness = { path = "../bridge-event-witness" }
 gosh-dense-balanced-tree = { workspace = true }
 halo2-base = { workspace = true }
 anyhow = { workspace = true }

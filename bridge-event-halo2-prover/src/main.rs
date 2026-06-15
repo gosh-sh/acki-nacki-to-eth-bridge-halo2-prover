@@ -1,14 +1,13 @@
 //! `bridge-event-prove` — one-shot Circuit 4 proof generator.
 //!
-//! Modeled after the dex tooling (`acki-nacki/tests/dex/...`) approach
-//! where Python orchestrators shell out to a Rust binary per artefact.
-//! The future `generate_withdrawals_with_live_event_proving.py` (Track D4)
+//! `generate_withdrawals_with_live_event_proving.py` (Track D4)
 //! will invoke this binary once per `WithdrawalInitiated` event.
 //!
 //! ### Modes
 //!
 //! * `--fixture <path>` — read a `PrivateWitness` JSON (produced by
-//!   Track D1's `bridge-event-witness-builder`) and prove it.
+//!   Track D1's `bridge-event-witness-builder` binary, now shipped from
+//!   the `bridge-event-witness` crate) and prove it.
 //! * `--selftest` — synthesise inputs via
 //!   `bridge-event-prove-circuit::test_helpers::build_synthetic_event_keygen_inputs`
 //!   and prove them. Useful for smoke-testing the install (keygen → prove
@@ -17,8 +16,7 @@
 //! ### Output
 //!
 //! Always prints a single-line JSON summary as the **last non-empty line**
-//! of stdout (matching how `acki-nacki/tests/dex/dex_proof_utils.py` parses
-//! `halo2-proover` output). If `--out-dir` is supplied, also writes
+//! of stdout. If `--out-dir` is supplied, also writes
 //! `proof_event_{NNN:06}.json` to that directory using a separate seqno
 //! space from `bridge-prover-daemon`'s `proof_{NNN:06}.json`.
 //!

@@ -1,4 +1,4 @@
-//! Golden-file test: exercise the BOC walk + event decode against the first
+//! exercise the BOC walk + event decode against the first
 //! captured `WithdrawalInitiated` BOC from
 //! `acki-nacki-to-eth-bridge-halo2-circuits/bridge-event-prove-circuit/withdrawals.txt`.
 //!
@@ -7,8 +7,8 @@
 //! is regenerated. The constants are pinned and any drift will surface as a
 //! field-level assertion failure.
 
-use bridge_event_private_witness_export::schema::SCHEMA_VERSION;
-use bridge_event_private_witness_export::{
+use bridge_event_witness::schema::SCHEMA_VERSION;
+use bridge_event_witness::{
     export_from_event_boc_base64, BlockContextInput,
 };
 
@@ -89,6 +89,6 @@ fn witness_roundtrips_through_json() {
     };
     let w = export_from_event_boc_base64(EVENT_BOC_B64, &ctx).unwrap();
     let json = serde_json::to_string(&w).expect("serialize");
-    let _round: bridge_event_private_witness_export::schema::PrivateWitness =
+    let _round: bridge_event_witness::schema::PrivateWitness =
         serde_json::from_str(&json).expect("deserialize");
 }

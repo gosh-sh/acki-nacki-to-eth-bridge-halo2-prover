@@ -72,7 +72,7 @@ use bridge_prover_lib::chain_proof_builder::{
 };
 use bridge_prover_lib::gql_client::{self, GqlClient};
 
-use bridge_event_private_witness_export::schema::{
+use bridge_event_witness::schema::{
     AnchorRef, DenseChainLinkSer, MerkleProofData, PrivateWitness, SCHEMA_VERSION,
 };
 

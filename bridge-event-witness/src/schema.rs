@@ -1,7 +1,8 @@
 //! On-disk schema for the exported private witness JSON.
 //!
-//! Producers: `bridge-event-private-witness-export` (Rust binary + library),
-//! eventually also the Python orchestration driver.
+//! Producers: the `bridge-event-private-witness-export` and
+//! `bridge-event-witness-builder` binaries (both in the `bridge-event-witness`
+//! crate), eventually also the Python orchestration driver.
 //! Consumers: `bridge_event_prover_lib` (Track C), the
 //! `bridge-event-halo2-prover` one-shot CLI (Track D).
 //!
@@ -112,8 +113,7 @@ pub struct MerkleProofData {
 
 /// Reference to a layer hash already mirrored by the verifier — the
 /// "anchor" the event proof binds to. The daemon (Track D) populates this
-/// from `state/verifier_state.json`. With anonymization dropped, the
-/// circuit exposes a single `final_root` public input, so the daemon only
+/// from `state/verifier_state.json`. circuit exposes a single `final_root` public input, so the daemon only
 /// needs to supply the matching anchor hash (and the dense chain to
 /// rebuild it inside the circuit).
 #[derive(Debug, Clone, Serialize, Deserialize)]

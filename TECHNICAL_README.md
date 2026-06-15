@@ -117,14 +117,16 @@ Mirrors the dex-tooling convention (`acki-nacki/tests/dex/...`) of one Rust bina
 
 ```
 acki-nacki-to-eth-bridge-halo2-prover/
-├── Cargo.toml  Cargo.lock                 # workspace root (7 members below)
+├── Cargo.toml  Cargo.lock                 # workspace root (6 members below)
 ├── bridge-prover-lib/                     # shared library
 ├── bridge-prover-daemon/                  # bin "bridge-prover-daemon" (Circuits 1A + 2)
 ├── bridge-verifier-daemon/                # bin "bridge-verifier-daemon" (all three circuits)
 ├── bridge-event-prover-lib/               # shared Circuit 4 prover/verifier library
 ├── bridge-event-halo2-prover/             # bin "bridge-event-halo2-prover" (Circuit 4, one-shot)
-├── bridge-event-private-witness-export/   # bin: dump PartialPrivateWitness from a block
-├── bridge-event-witness-builder/          # bin: enrich it via GQL + verifier state
+├── bridge-event-witness/                  # 2 bins: "bridge-event-private-witness-export" (dump
+│                                          #         PartialPrivateWitness from a block) and
+│                                          #         "bridge-event-witness-builder" (enrich it
+│                                          #         via GQL + verifier state)
 ├── bk_set.json                            # local BLS pubkeys fallback (see Troubleshooting)
 ├── bk_set.json.poseidon_dex_local.bak     # snapshot for the acki-nacki `poseidon_dex` branch
 ├── scripts/run-bridge-test.sh             # launcher (wipes state, builds, starts both daemons)
@@ -547,7 +549,7 @@ What this means in practice:
 - **Liveness coupling.** A user withdrawal cannot be proved until the bundle covering its key block has been relayed (one bundle ≈ `W·P = 512` blocks ≈ minutes on devnet, longer on shellnet).
 - **No cross-layer compression.** Even when an event sits inside an L2/L3/… aggregation that the prover *is* relaying, the witness still has to anchor against the L1 cell. There is no escalation logic.
 
-Future enhancements (all already sketched in `bridge-event-witness-builder/src/main.rs` as `TODO(L1→L5 escalation)`):
+Future enhancements (all already sketched in `bridge-event-witness/src/bin/build.rs` as `TODO(L1→L5 escalation)`):
 
 - **L1→Ln escalation.** When the event's bundle has rolled out of the L1 rolling window, walk up: find the parent L2 key block in `state.layer_windows[1]`, append one active `dense_chain` link to bridge L1→L2 (or further). The in-circuit `verify_chain_of_dense_proofs` already supports up to 11 hops; only the witness builder needs work. Production-shape `real_chain_builder::build_layer_n_tree` is the reference layout.
 - **Wait-for-L2 (or higher) by default.** Today the prover anchors at the *nearest* L1 because that's the soonest. A later policy could prefer a higher layer when latency budget allows, to amortise verifier gas across many events under one anchor.
