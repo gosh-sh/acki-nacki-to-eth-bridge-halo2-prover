@@ -68,6 +68,19 @@ pub fn verify_primary_proof(
     verify_kzg_proof(key_manager, key_manager.primary_vk(), proof_bytes, instances)
 }
 
+/// Verify a Circuit 1b (Fallback Attestation) proof. Same 4 public instances
+/// as Circuit 1a — only the verifying key differs, since the fallback
+/// circuit's constraint system covers two BLS verifications (PRIMARY
+/// prefinalization + FALLBACK target proof) plus same-block_id equality
+/// checks, all bound to the fallback VK at keygen.
+pub fn verify_fallback_proof(
+    key_manager: &KeyManager,
+    proof_bytes: &[u8],
+    instances: &[Fr],
+) -> bool {
+    verify_kzg_proof(key_manager, key_manager.fallback_vk(), proof_bytes, instances)
+}
+
 /// Verify a Circuit 2 (Layer Historical Hashes Movement Checker) proof
 /// against the given 14 public instances:
 /// `[block_id, bk_set_poseidon_hash, num_layers, layer_hash_frs[0..9], prev_max_level_layer_hash]`.

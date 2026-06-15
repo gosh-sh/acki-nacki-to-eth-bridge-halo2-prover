@@ -454,6 +454,10 @@ async fn main() -> anyhow::Result<()> {
             block_height: observed_height,
             last_seen_block_seqno: state.stored_last_seen_block_seq_no as u32,
             block_id_hex: ipc::fr_to_hex(&primary_proof.block_id_fr),
+            // Fallback-path dispatch lands in a later commit; the current
+            // daemon only takes the Primary branch (the skip at line 320
+            // bails on fallback target_type), so tag every proof as 1a.
+            attestation_circuit: ipc::AttestationCircuit::Primary,
             primary_proof_hex: hex::encode(&primary_proof.proof_bytes),
             layer_proof_hex: hex::encode(&layer_proof.proof_bytes),
             layer_block_id_hex: ipc::fr_to_hex(&layer_proof.block_id_fr),

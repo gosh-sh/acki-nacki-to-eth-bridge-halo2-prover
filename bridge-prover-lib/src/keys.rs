@@ -15,10 +15,12 @@ use halo2_base::utils::fs::gen_srs;
 use tracing::info;
 
 use attestation_bls_checker_circuit::primary_circuit::PrimaryAttestationBlsCheckerCircuit;
+use attestation_bls_checker_circuit::fallback_circuit::FallbackAttestationBlsCheckerCircuit;
 use historical_layer_hashes_movement_checker_circuit::circuit::LayerHashesMovementCheckerCircuit;
 use bridge_event_prove_circuit::test_helpers::build_synthetic_event_keygen_inputs;
 
-// ---- Circuit 1a (Primary Attestation) constants ----
+// ---- Circuit 1a (Primary Attestation) and 1b (Fallback Attestation) constants ----
+// Both circuits share K and shape; only the constraint system / VK differ.
 const K: u32 = 20;
 const NUM_UNUSABLE_ROWS: usize = 109;
 const LOOKUP_BITS: usize = 19;
@@ -52,6 +54,10 @@ pub struct KeyManager {
     pub primary_vk: Option<VerifyingKey<G1Affine>>,
     pub primary_pk: Option<ProvingKey<G1Affine>>,
     pub primary_config: Option<BaseCircuitParams>,
+    // Circuit 1b (Fallback Attestation) — same K=20 shape, different VK/PK
+    pub fallback_vk: Option<VerifyingKey<G1Affine>>,
+    pub fallback_pk: Option<ProvingKey<G1Affine>>,
+    pub fallback_config: Option<BaseCircuitParams>,
     // Circuit 2 (Layer Hashes Movement)
     pub layer_vk: Option<VerifyingKey<G1Affine>>,
     pub layer_pk: Option<ProvingKey<G1Affine>>,
@@ -83,6 +89,9 @@ impl KeyManager {
             primary_vk: None,
             primary_pk: None,
             primary_config: None,
+            fallback_vk: None,
+            fallback_pk: None,
+            fallback_config: None,
             layer_vk: None,
             layer_pk: None,
             layer_config: None,
@@ -102,6 +111,19 @@ impl KeyManager {
                 info!("primary PK found on disk (will load on demand)");
             }
             mgr.primary_config = Some(config);
+        }
+
+        // Try loading cached fallback VK and config (PK loaded on demand).
+        if let Ok(config) = mgr.load_config("fallback") {
+            info!("found fallback config: {:?}", config);
+            if let Some(vk) = mgr.try_load_vk("fallback", &config) {
+                info!("loaded fallback VK from cache");
+                mgr.fallback_vk = Some(vk);
+            }
+            if mgr.pk_path("fallback").exists() {
+                info!("fallback PK found on disk (will load on demand)");
+            }
+            mgr.fallback_config = Some(config);
         }
 
         // Try loading cached layer VK and config (PK loaded on demand).
@@ -198,6 +220,87 @@ impl KeyManager {
 
     pub fn primary_config(&self) -> &BaseCircuitParams {
         self.primary_config.as_ref().expect("primary config not loaded")
+    }
+
+    // ---- Circuit 1b (Fallback Attestation) ----
+    //
+    // Same K=20 / lookup_bits / limb shape as Circuit 1a — the constraint
+    // system differs (two BLS verifications + same-block_id checks +
+    // `ThresholdMode::Fallback` >N/2 threshold), so VK/PK are distinct.
+    // Disk artifacts: `fallback_vk.bin`, `fallback_pk.bin`, `fallback_config_params.json`.
+
+    /// Ensure fallback circuit keys exist on disk. Runs keygen if not cached.
+    /// Does NOT keep the PK in memory — call `load_fallback_pk()` before proof
+    /// generation. Keygen uses `generate_test_data_fallback_all_sign(bk_set.len())`
+    /// which produces a constraint-satisfying (PRIMARY, FALLBACK) attestation
+    /// pair over a random block_id; only the circuit constraint shape affects
+    /// the resulting VK/PK, so any admissible witness drives keygen identically.
+    pub fn ensure_fallback_keys(
+        &mut self,
+        bk_set: &HashMap<u16, Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        if self.fallback_vk.is_some() && self.pk_path("fallback").exists() {
+            info!("fallback keys already available (VK in memory, PK on disk)");
+            return Ok(());
+        }
+
+        info!("running keygen for fallback circuit (this may take ~60s)...");
+
+        let test_data =
+            bridge_test_data_gen::generator::generate_test_data_fallback_all_sign(bk_set.len())
+                .context("failed to generate reference fallback test data for keygen")?;
+        let attestation_fallback_bytes = test_data
+            .attestation_2_bytes
+            .ok_or_else(|| anyhow::format_err!(
+                "fallback test data missing attestation_2_bytes (FALLBACK target proof)"
+            ))?;
+
+        let last_seen: u32 = 0;
+        let circuit = FallbackAttestationBlsCheckerCircuit::<Fr>::new(
+            test_data.attestation_bytes,
+            attestation_fallback_bytes,
+            test_data.bk_set,
+            last_seen,
+            K as usize,
+            NUM_UNUSABLE_ROWS,
+            LOOKUP_BITS,
+            LIMB_BITS,
+            NUM_LIMBS,
+            MAX_SIGNERS,
+        );
+        let base_params = circuit.params.base_circuit_params.clone();
+        info!("fallback base_circuit_params: {:?}", base_params);
+
+        let t = std::time::Instant::now();
+        let vk = keygen_vk(&self.srs, &circuit).context("fallback keygen_vk failed")?;
+        info!("fallback keygen_vk: {:?}", t.elapsed());
+
+        let t = std::time::Instant::now();
+        let pk = keygen_pk(&self.srs, vk.clone(), &circuit).context("fallback keygen_pk failed")?;
+        info!("fallback keygen_pk: {:?}", t.elapsed());
+
+        self.save_vk("fallback", &vk)?;
+        self.save_pk("fallback", &pk)?;
+        self.save_config("fallback", &base_params)?;
+
+        self.fallback_vk = Some(vk);
+        // PK intentionally dropped here; reload on demand via load_fallback_pk().
+        self.fallback_config = Some(base_params);
+
+        info!("fallback keys generated and cached (PK on disk, not in memory)");
+        Ok(())
+    }
+
+    pub fn fallback_vk(&self) -> &VerifyingKey<G1Affine> {
+        self.fallback_vk.as_ref().expect("fallback VK not loaded")
+    }
+
+    pub fn fallback_pk(&self) -> &ProvingKey<G1Affine> {
+        self.fallback_pk.as_ref().expect("fallback PK not loaded")
+    }
+
+    pub fn fallback_config(&self) -> &BaseCircuitParams {
+        self.fallback_config.as_ref().expect("fallback config not loaded")
     }
 
     // ---- Circuit 2 (Layer Hashes Movement) ----
@@ -391,6 +494,30 @@ impl KeyManager {
         if self.primary_pk.is_some() {
             self.primary_pk = None;
             info!("primary PK unloaded from memory");
+        }
+    }
+
+    /// Load fallback PK from disk into memory. Call before generating Circuit 1b proofs.
+    pub fn load_fallback_pk(&mut self) -> anyhow::Result<()> {
+        if self.fallback_pk.is_some() {
+            return Ok(());
+        }
+        let config = self.fallback_config.as_ref()
+            .ok_or_else(|| anyhow::format_err!("fallback config not loaded — run ensure_fallback_keys first"))?;
+        info!("loading fallback PK from disk (~3.7 GB)...");
+        let t = std::time::Instant::now();
+        let pk = self.try_load_pk("fallback", config)
+            .ok_or_else(|| anyhow::format_err!("failed to load fallback PK from {}", self.pk_path("fallback").display()))?;
+        info!("fallback PK loaded in {:?}", t.elapsed());
+        self.fallback_pk = Some(pk);
+        Ok(())
+    }
+
+    /// Unload fallback PK from memory. Call after generating Circuit 1b proofs.
+    pub fn unload_fallback_pk(&mut self) {
+        if self.fallback_pk.is_some() {
+            self.fallback_pk = None;
+            info!("fallback PK unloaded from memory");
         }
     }
 

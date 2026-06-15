@@ -13,13 +13,34 @@ use serde::{Deserialize, Serialize};
 const PROOFS_DIR: &str = "proofs";
 
 /// Current `ProofRequest` schema version. Bumped to 2 when `block_height` was
-/// added; the verifier rejects mismatched versions instead of silently
-/// re-interpreting fields.
-pub const PROOF_REQUEST_SCHEMA_VERSION: u32 = 2;
+/// added; bumped to 3 when `attestation_circuit` was added so the verifier
+/// knows which VK (Primary 1a vs Fallback 1b) to use. The verifier rejects
+/// mismatched versions instead of silently re-interpreting fields.
+pub const PROOF_REQUEST_SCHEMA_VERSION: u32 = 3;
 
 fn default_schema_version() -> u32 { PROOF_REQUEST_SCHEMA_VERSION }
 
-/// JSON structure for combined proof files (Circuit 1a + Circuit 2).
+/// Discriminates which attestation circuit produced `primary_proof_hex`.
+///
+/// Both circuits share the 4-public-instance layout; the verifier picks the
+/// matching VK based on this tag. Default (for legacy proof files written
+/// before schema v3) is `Primary`, matching the v2 wire shape where the
+/// prover only ever emitted Circuit 1a.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AttestationCircuit {
+    /// Circuit 1a — single PRIMARY-type attestation, ≥2N/3 signers.
+    #[default]
+    Primary,
+    /// Circuit 1b — paired (PRIMARY prefinalization, FALLBACK target) over
+    /// the same block_id, each >N/2 signers. Activated when consensus
+    /// fallback path fires (primary deadline β missed).
+    Fallback,
+}
+
+fn default_attestation_circuit() -> AttestationCircuit { AttestationCircuit::Primary }
+
+/// JSON structure for combined proof files (Circuit 1a or 1b + Circuit 2).
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProofRequest {
     /// Wire-format version. v2 added `block_height`. Older (v1) files
@@ -37,11 +58,20 @@ pub struct ProofRequest {
     pub block_height: u64,
     /// Sequence number of the previously proved key block.
     pub last_seen_block_seqno: u32,
-    /// Block ID from Circuit 1a (attestation) as hex Fr.
+    /// Block ID from the attestation circuit as hex Fr. Same value whether
+    /// 1a or 1b emitted the proof — Circuit 1b's same-block_id constraint
+    /// guarantees the two attestations in the fallback pair agree.
     pub block_id_hex: String,
 
-    // ---- Circuit 1a (Primary Attestation) ----
-    /// Hex-encoded Circuit 1a proof bytes.
+    // ---- Attestation circuit (1a Primary or 1b Fallback) ----
+    /// Which attestation circuit produced `primary_proof_hex` — discriminates
+    /// the verifying key (Primary vs Fallback). Legacy v2 proof files without
+    /// this field deserialize as `Primary`.
+    #[serde(default = "default_attestation_circuit")]
+    pub attestation_circuit: AttestationCircuit,
+    /// Hex-encoded attestation-circuit proof bytes (1a or 1b — discriminated
+    /// by `attestation_circuit`). Field name preserved across the v3 bump for
+    /// backwards-readable JSON; the verifier picks the matching VK by tag.
     pub primary_proof_hex: String,
 
     // ---- Circuit 2 (Layer Hashes Movement) ----
