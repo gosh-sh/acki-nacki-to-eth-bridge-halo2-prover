@@ -9,7 +9,8 @@
 //!
 //! The two `verify_*` entry points are thin wrappers around the shared
 //! [`verify_kzg_proof`] helper so the verification stack stays defined in
-//! exactly one place.
+//! exactly one place. The helper is `pub` because Circuit 4 (Event Prove)
+//! in `bridge-event-prover-lib` reuses it verbatim — same stack, different VK.
 
 use halo2_base::halo2_proofs::{
     halo2curves::bn256::{Bn256, Fr, G1Affine},
@@ -27,10 +28,11 @@ use halo2_base::halo2_proofs::{
 
 use crate::keys::KeyManager;
 
-/// Shared verification core. Both circuit-specific wrappers below delegate
-/// here so the transcript / strategy / multiopen choices live in exactly
-/// one place.
-fn verify_kzg_proof(
+/// Shared verification core. All circuit-specific wrappers delegate here
+/// so the transcript / strategy / multiopen choices live in exactly one
+/// place. Re-exported `pub` for the Circuit 4 verifier in
+/// `bridge-event-prover-lib`.
+pub fn verify_kzg_proof(
     key_manager: &KeyManager,
     vk: &VerifyingKey<G1Affine>,
     proof_bytes: &[u8],

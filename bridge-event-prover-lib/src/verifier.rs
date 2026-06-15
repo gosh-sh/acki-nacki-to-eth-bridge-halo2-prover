@@ -1,18 +1,10 @@
 //! Circuit 4 (Event Prove — `WithdrawalInitiated`) proof verification.
+//!
+//! The halo2/KZG verification stack is identical to Circuits 1a and 2, so
+//! we delegate to [`bridge_prover_lib::verifier::verify_kzg_proof`] and
+//! supply Circuit 4's VK from the shared [`KeyManager`].
 
-use halo2_base::halo2_proofs::{
-    halo2curves::bn256::{Bn256, Fr, G1Affine},
-    plonk::verify_proof,
-    poly::{
-        commitment::ParamsProver,
-        kzg::{
-            commitment::KZGCommitmentScheme,
-            multiopen::VerifierSHPLONK,
-            strategy::SingleStrategy,
-        },
-    },
-    transcript::{Blake2bRead, Challenge255, TranscriptReadBuffer},
-};
+use halo2_base::halo2_proofs::halo2curves::bn256::Fr;
 
 use bridge_prover_lib::keys::KeyManager;
 
@@ -22,31 +14,17 @@ use bridge_prover_lib::keys::KeyManager;
 ///   `[token_id, amount, recipient_hi, recipient_lo, dst_chain_id,
 ///   sender_acc_fr, dapp_fr, acc_fr, nullifier, final_root]`
 ///
-/// Mirror of `bridge_prover_lib::verifier::verify_layer_proof` — the only
-/// differences are which `KeyManager` VK is used (event VK) and the
-/// instance count, which is checked implicitly by `verify_proof` against
-/// the VK shape.
+/// The instance count is checked implicitly by `verify_proof` against the
+/// VK shape.
 pub fn verify_event_proof(
     key_manager: &KeyManager,
     proof_bytes: &[u8],
     instances: &[Fr],
 ) -> bool {
-    let instance_refs: &[&[Fr]] = &[instances];
-    let verifier_params = key_manager.srs.verifier_params();
-    let strategy = SingleStrategy::new(&key_manager.srs);
-    let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(proof_bytes);
-    verify_proof::<
-        KZGCommitmentScheme<Bn256>,
-        VerifierSHPLONK<'_, Bn256>,
-        Challenge255<G1Affine>,
-        Blake2bRead<&[u8], G1Affine, Challenge255<G1Affine>>,
-        SingleStrategy<'_, Bn256>,
-    >(
-        verifier_params,
+    bridge_prover_lib::verifier::verify_kzg_proof(
+        key_manager,
         key_manager.event_vk(),
-        strategy,
-        &[instance_refs],
-        &mut transcript,
+        proof_bytes,
+        instances,
     )
-    .is_ok()
 }
