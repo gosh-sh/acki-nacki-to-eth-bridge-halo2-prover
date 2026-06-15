@@ -105,6 +105,13 @@ async fn main() -> anyhow::Result<()> {
             PARAMS_DIR
         );
     }
+    if key_manager.fallback_vk.is_none() {
+        anyhow::bail!(
+            "fallback VK not found in {}. Run the prover first to generate keys \
+             (the fallback VK is materialised alongside the primary VK on cold start).",
+            PARAMS_DIR
+        );
+    }
     if key_manager.layer_vk.is_none() {
         anyhow::bail!(
             "layer VK not found in {}. Run the prover first to generate keys.",
@@ -117,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
             PARAMS_DIR
         );
     }
-    info!("VKs loaded (primary + layer + event)");
+    info!("VKs loaded (primary + fallback + layer + event)");
 
     // 3. Load state.
     let mut state = BridgeState::load(STATE_FILE, HISTORY_WINDOW_SIZE)?;
@@ -303,16 +310,34 @@ async fn main() -> anyhow::Result<()> {
                 last_seen_fr,
             ];
 
+            // Pick the verifying key based on which attestation circuit the
+            // prover ran. The 4-public-instance layout is identical for 1a
+            // and 1b, so only the VK varies; everything else (transcript,
+            // SHPLONK, single-strategy) is shared.
             let t = Instant::now();
-            let primary_verified = verifier::verify_primary_proof(
-                &key_manager,
-                &primary_proof_bytes,
-                &primary_instances,
-            );
+            let (circuit_label, primary_verified) = match request.attestation_circuit {
+                ipc::AttestationCircuit::Primary => (
+                    "Circuit 1a (Primary)",
+                    verifier::verify_primary_proof(
+                        &key_manager,
+                        &primary_proof_bytes,
+                        &primary_instances,
+                    ),
+                ),
+                ipc::AttestationCircuit::Fallback => (
+                    "Circuit 1b (Fallback)",
+                    verifier::verify_fallback_proof(
+                        &key_manager,
+                        &primary_proof_bytes,
+                        &primary_instances,
+                    ),
+                ),
+            };
             let primary_time = t.elapsed();
             info!(
-                "block {}: Circuit 1a {} ({:?})",
+                "block {}: {} {} ({:?})",
                 next_seqno,
+                circuit_label,
                 if primary_verified { "VERIFIED" } else { "FAILED" },
                 primary_time
             );
