@@ -10,9 +10,22 @@ Pipeline (single event):
   halo2-prover) → assert daemon verdict (`verified && anchor_matched`).
 
 Env vars (all optional, defaults are MODE-dependent):
-  MODE         local | shellnet  (default: local)
-  PROVER_DIR   default: parent of this script
+  MODE                  local | shellnet  (default: local)
+  PROVER_DIR            default: parent of this script
   NETWORK, GRAPHQL_URL, WORK_DIR
+  USDC_BRIDGE_KEY_PATH  override path to the keypair file used to sign
+                        `USDCBridge.mintAndSend`. When unset and MODE=local,
+                        the bundled `python/contracts/USDCBridge.keys.json`
+                        is auto-overwritten from the sibling
+                        `acki-nacki/config/USDCBridge.keys.json` (escape
+                        hatch for out-of-tree deployments). Either way the
+                        orchestrator validates the chosen key against the
+                        on-chain `USDCBridge.getOwnerPubkey()` before
+                        proceeding, so a stale/wrong key fails fast instead
+                        of bouncing later with TVM exit_code 209.
+  ACKI_NACKI_ROOT       override sibling acki-nacki checkout (used by both
+                        bk_set and USDCBridge key materialization in local
+                        mode). Default: `<PROVER_DIR>/../acki-nacki`.
 
 Prereqs (the script does not start these):
   - Live cluster reachable at GRAPHQL_URL.
@@ -59,7 +72,7 @@ if IS_SHELLNET:
     DEFAULT_NETWORK = "shellnet.ackinacki.org"
     DEFAULT_GRAPHQL = "https://shellnet.ackinacki.org/graphql"
     DEFAULT_WORK    = "work-shellnet"
-    USDC_BRIDGE_KEY_PATH = USDC_BRIDGE_KEYS_SHELLNET
+    _DEFAULT_USDC_BRIDGE_KEY_PATH = USDC_BRIDGE_KEYS_SHELLNET
     GQL_KWARGS = {"user_agent": "bridge-e2e-orchestrator-shellnet/1.0",
                   "timeout": 30}
     EVENT_INDEXER_TIMEOUT_S    = 240
@@ -69,11 +82,17 @@ else:
     DEFAULT_NETWORK = "http://127.0.0.1:80"
     DEFAULT_GRAPHQL = "http://localhost/graphql"
     DEFAULT_WORK    = "work-local"
-    USDC_BRIDGE_KEY_PATH = USDC_BRIDGE_KEYS
+    _DEFAULT_USDC_BRIDGE_KEY_PATH = USDC_BRIDGE_KEYS
     GQL_KWARGS = {}
     EVENT_INDEXER_TIMEOUT_S    = 120
     VERIFIER_STATE_TIMEOUT_S   = 1800
     FIRE_WINDOW_WAIT_TIMEOUT_S = 600
+
+# An explicit override pins the key path (no auto-materialize). Otherwise we
+# fall back to the MODE-picked bundled file and — in local mode — refresh it
+# from the sibling acki-nacki checkout before use.
+USDC_BRIDGE_KEY_PATH_OVERRIDE = os.environ.get("USDC_BRIDGE_KEY_PATH")
+USDC_BRIDGE_KEY_PATH = USDC_BRIDGE_KEY_PATH_OVERRIDE or _DEFAULT_USDC_BRIDGE_KEY_PATH
 
 DAEMON_RESULT_TIMEOUT_S = 600
 RUST_BIN_TIMEOUT_S      = 600
@@ -295,6 +314,81 @@ def materialize_bk_set_from_node_config():
     tracer.log(f"  wrote {out_path}")
 
 
+# ── Local-devnet USDCBridge owner key materialization & validation ────────────
+
+def materialize_usdc_bridge_key_from_node_config():
+    """Overwrite the bundled `python/contracts/USDCBridge.keys.json` with the
+    in-tree `acki-nacki/config/USDCBridge.keys.json` that the local devnet
+    actually deployed the contract with.
+
+    The bundled key is shipped only so `python/` can run drop-in without a
+    hard dep on a sibling checkout. On a freshly-rebuilt devnet the in-tree
+    key can drift from the bundled one — when that happens
+    `USDCBridge.mintAndSend` silently bounces (TVM exit_code 209) and the
+    orchestrator deadlocks waiting for the ECC[3] credit.
+
+    Only called when MODE=local and the user did not pin a path via
+    `USDC_BRIDGE_KEY_PATH`. Honors `ACKI_NACKI_ROOT` for sibling location.
+    """
+    acki_nacki_root = os.environ.get(
+        "ACKI_NACKI_ROOT",
+        os.path.abspath(os.path.join(PROVER_DIR, "..", "acki-nacki")),
+    )
+    src = os.path.join(acki_nacki_root, "config", "USDCBridge.keys.json")
+    if not os.path.isfile(src):
+        raise FileNotFoundError(
+            f"USDCBridge owner key missing at {src}; the local cluster's "
+            f"acki-nacki checkout was expected at {acki_nacki_root} "
+            "(override with ACKI_NACKI_ROOT, or pin USDC_BRIDGE_KEY_PATH)"
+        )
+    if os.path.realpath(src) == os.path.realpath(USDC_BRIDGE_KEY_PATH):
+        tracer.log(f"  USDCBridge key already points at {src} — skip copy")
+        return
+    shutil.copyfile(src, USDC_BRIDGE_KEY_PATH)
+    tracer.log(f"  copied {src}")
+    tracer.log(f"       → {USDC_BRIDGE_KEY_PATH}")
+
+
+def validate_usdc_bridge_key():
+    """Cross-check the local USDCBridge keypair against the on-chain owner
+    pubkey via `USDCBridge.getOwnerPubkey()`. Failure here would otherwise
+    surface much later as an opaque 120s timeout waiting for the ECC[3]
+    credit, with `exit_code 209` only visible in node logs.
+    """
+    try:
+        with open(USDC_BRIDGE_KEY_PATH) as f:
+            local_pub_hex = json.load(f)["public"].lower()
+    except (OSError, KeyError, json.JSONDecodeError) as e:
+        raise RuntimeError(
+            f"cannot read local USDCBridge key at {USDC_BRIDGE_KEY_PATH}: {e}"
+        ) from e
+
+    raw = common.run_getter(USDC_BRIDGE_ADDRESS, USDC_BRIDGE_ABI, "getOwnerPubkey")
+    if not isinstance(raw, dict) or "value0" not in raw:
+        raise RuntimeError(
+            f"USDCBridge.getOwnerPubkey returned unexpected payload: {raw!r}"
+        )
+    on_chain_pub_int = int(str(raw["value0"]), 0)
+    on_chain_pub_hex = f"{on_chain_pub_int:064x}"
+
+    if on_chain_pub_hex != local_pub_hex:
+        hint = (
+            "set USDC_BRIDGE_KEY_PATH to the keypair the contract was "
+            "deployed with"
+            if USDC_BRIDGE_KEY_PATH_OVERRIDE is not None
+            else "rerun against a fresh local devnet, or unset "
+                 "USDC_BRIDGE_KEY_PATH to let the orchestrator auto-sync"
+        )
+        raise RuntimeError(
+            "USDCBridge owner key mismatch — mintAndSend would bounce with "
+            f"TVM exit_code 209.\n"
+            f"  local  ({USDC_BRIDGE_KEY_PATH}): {local_pub_hex}\n"
+            f"  on-chain (getOwnerPubkey):       {on_chain_pub_hex}\n"
+            f"  hint: {hint}"
+        )
+    tracer.log(f"  USDCBridge owner key OK ({local_pub_hex[:16]}…)")
+
+
 # ── Driver ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -325,6 +419,14 @@ def main():
     if not IS_SHELLNET:
         tracer.log_phase("Materializing bk_set.json from local cluster config")
         materialize_bk_set_from_node_config()
+        if USDC_BRIDGE_KEY_PATH_OVERRIDE is None:
+            tracer.log_phase("Materializing USDCBridge.keys.json from local cluster config")
+            materialize_usdc_bridge_key_from_node_config()
+
+    tracer.log_phase("Validating USDCBridge owner key against on-chain getOwnerPubkey")
+    tracer.log(f"  USDC_BRIDGE_KEY_PATH: {USDC_BRIDGE_KEY_PATH}"
+               + (" (user-overridden)" if USDC_BRIDGE_KEY_PATH_OVERRIDE else ""))
+    validate_usdc_bridge_key()
 
     baseline = gql.fetch_bridge_extouts(limit=500)
     baseline_ids = {n["id"] for n in baseline}
