@@ -256,9 +256,7 @@ def materialize_bk_set_from_node_config():
     containers boot with, enumerated by the running `*-nodeN-*` containers so
     we don't hard-code the topology size.
 
-    Mirrors `acki-nacki/tests/exchange/bridge_e2e_self_contained.py`'s
-    function of the same name. Shellnet path uses GraphQL only — never call
-    this when `MODE=shellnet`.
+    Shellnet path uses GraphQL only — never call this when `MODE=shellnet`.
 
     `ACKI_NACKI_ROOT` env var overrides the default sibling path.
     """

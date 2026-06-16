@@ -267,8 +267,8 @@ Expect within ~3 min: prover logs `auto-mode: chain head at seq_no=N, pinned see
 ### Step 5 — Run the orchestrator
 
 ```bash
-cd /path/to/acki-nacki
-NETWORK=localhost python3 tests/exchange/generate_withdrawals_with_live_event_proving.py
+cd /path/to/acki-nacki-to-eth-bridge-halo2-prover
+NETWORK=localhost python3 python/generate_withdrawals_with_live_event_proving.py
 ```
 
 Phases (`[T+MM:SS]`):

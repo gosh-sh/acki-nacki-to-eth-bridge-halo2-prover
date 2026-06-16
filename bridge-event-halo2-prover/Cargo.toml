@@ -12,7 +12,7 @@ edition = "2021"
 #   * prints a JSON summary to stdout (last non-empty line, dex-style),
 #   * optionally writes `proof_event_NNN.json` to `--out-dir`.
 #
-# Invoked by `acki-nacki/tests/exchange/generate_withdrawals_with_live_event_proving.py`.
+# Invoked by `python/generate_withdrawals_with_live_event_proving.py` (bundled in this repo).
 
 [[bin]]
 name = "bridge-event-halo2-prover"
