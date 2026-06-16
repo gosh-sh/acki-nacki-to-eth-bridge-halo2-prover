@@ -61,53 +61,8 @@ rand = "0.8"
 bridge-prover-lib = { path = "bridge-prover-lib" }
 bridge-event-prover-lib = { path = "bridge-event-prover-lib" }
 
-# --- Halo2 backend unification (must collapse to ONE halo2-base instance) ---
-#
-# Several sources reach this workspace's dep graph:
-#   - tvm-sdk `full_dex_and_bridge_test_with_final_halo2_circuit` pulls
-#     halo2-base / halo2-ecc / zkevm-hashes from
-#     `gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381` branch
-#     `bump-halo2-lib-v0.4.1` (0.4.1).
-#   - acki-nacki-to-eth-bridge-halo2-circuits pulls them from the SAME
-#     gosh-sh repo but branch `main` (0.4.0).
-#   - axiom-eth + snark-verifier-sdk pull them from
-#     `https://github.com/axiom-crypto/halo2-lib.git` (crates.io 0.4.x).
-#   - halo2-axiom: tvm_vm uses gosh-sh/halo2-axiom; halo2-base 0.4.1 wants
-#     halo2-axiom 0.4.5 from crates.io.
-#
-# Cargo refuses to patch a git source onto itself even with a different branch
-# (`patches must point to different sources`), so we point EVERY patch at the
-# same LOCAL checkout (which sits at `bump-halo2-lib-v0.4.1` HEAD = 21f7d97).
-# All halo2-base/halo2-ecc/zkevm-hashes references then collapse to one local
-# package, and the cross-crate `Circuit<F>` traits unify.
 [patch.crates-io]
-halo2-base = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/halo2-base" }
-halo2-ecc = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/halo2-ecc" }
-zkevm-hashes = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/hashes/zkevm" }
-halo2-axiom = { git = "https://github.com/gosh-sh/halo2-axiom", branch = "main" }
-
-[patch."https://github.com/axiom-crypto/halo2-lib.git"]
-halo2-base = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/halo2-base" }
-halo2-ecc = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/halo2-ecc" }
-zkevm-hashes = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/hashes/zkevm" }
-
-[patch."https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381"]
-halo2-base = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/halo2-base" }
-halo2-ecc = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/halo2-ecc" }
-zkevm-hashes = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/halo2-lib-zkevm-sha256-and-bls12-381/hashes/zkevm" }
-
-[patch."https://github.com/axiom-crypto/axiom-eth"]
-axiom-eth = { git = "https://github.com/gosh-sh/axiom-eth", branch = "gosh-stable-rlcmanager-assignment" }
-
-# Same predicament as halo2-base: this workspace pulls gosh-halo2-crypto-lib
-# from `bump-halo2-lib-v0.4.1` (so it can build against halo2-base 0.4.1) while
-# acki-nacki-to-eth-bridge-halo2-circuits still pulls it from `main`. Two
-# `DenseChainLink` types in the graph; redirect every source to the local
-# checkout (currently on `bump-halo2-lib-v0.4.1` HEAD = 285975a).
-[patch."https://github.com/gosh-sh/gosh-halo2-crypto-lib"]
-gosh-dense-balanced-tree = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/gosh-halo2-crypto-lib/dense-balanced-tree" }
-gosh-bls-verification = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/gosh-halo2-crypto-lib/bls-verification" }
-gosh-sha256-chip = { path = "/Users/alinat/HALO2_TVM_EXPERIMENTS/gosh-halo2-crypto-lib/sha256-chip" }
+halo2-base = { git = "https://github.com/gosh-sh/halo2-lib-zkevm-sha256-and-bls12-381", branch = "main" }
 
 [profile.dev]
 opt-level = 3
