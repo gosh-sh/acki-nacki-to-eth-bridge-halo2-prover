@@ -14,10 +14,62 @@ use tracing::info;
 
 use historical_layer_hashes_movement_checker_circuit::{
     circuit::LayerHashesMovementCheckerCircuit,
-    LAYER_PREIMAGE_SIZE, MAX_LAYERS,
+    LAYER_PREIMAGE_SIZE, MAX_LAYERS, NUM_MERKLE_SIBLINGS,
 };
 
 use crate::keys::KeyManager;
+
+/// Number of public instances Circuit 2 emits:
+/// `block_id + bk_set_poseidon + num_layers + 10 layer hashes + prev_max_level_layer_hash = 14`.
+pub const LAYER_HASHES_NUM_PUBLIC_INPUTS: usize = 1 + 1 + 1 + MAX_LAYERS + 1;
+
+/// Bundled inputs for [`generate_layer_proof_with_input`]. Mirrors the
+/// `LayerHashesProofInput<'a>` previously hand-rolled in
+/// `bridge-prover-orchestrator::layer_hashes_prover` so the orchestrator can
+/// drop its local copy and import this directly.
+pub struct LayerHashesProofInput<'a> {
+    pub layer_hashes_preimage: [u8; LAYER_PREIMAGE_SIZE],
+    pub merkle_siblings: [[u8; 32]; NUM_MERKLE_SIBLINGS],
+    pub prev_max_level_layer_hash: Fr,
+    pub num_prev_chain_steps: u8,
+    pub prev_chain_proofs: &'a [DenseChainLink],
+    pub bk_set_poseidon_hash: Fr,
+    /// Public-instance vector, computed off-circuit by the caller and asserted
+    /// by the circuit. Order:
+    /// `[block_id, bk_set_poseidon, num_layers, layer_hash_frs[0..10], prev_max_level_layer_hash]`.
+    pub expected_instances: [Fr; LAYER_HASHES_NUM_PUBLIC_INPUTS],
+}
+
+/// Output type matching the orchestrator's `LayerHashesProofOutput` — proof
+/// bytes plus the (caller-supplied) 14-element instance vector.
+#[derive(Debug, Clone)]
+pub struct LayerHashesProofOutput {
+    pub proof_bytes: Vec<u8>,
+    pub instances: [Fr; LAYER_HASHES_NUM_PUBLIC_INPUTS],
+}
+
+/// Bundled-input wrapper around [`generate_layer_proof`]. Delegates to that
+/// function then returns the proof together with the caller's pre-computed
+/// instance vector, so binaries that already know the 14 Fr values do not
+/// need to re-derive them from the rich [`LayerProofOutput`] fields.
+pub fn generate_layer_proof_with_input(
+    key_manager: &KeyManager,
+    input: LayerHashesProofInput<'_>,
+) -> anyhow::Result<LayerHashesProofOutput> {
+    let out = generate_layer_proof(
+        key_manager,
+        &input.layer_hashes_preimage,
+        &input.merkle_siblings,
+        input.prev_max_level_layer_hash,
+        input.num_prev_chain_steps,
+        input.prev_chain_proofs,
+        input.bk_set_poseidon_hash,
+    )?;
+    Ok(LayerHashesProofOutput {
+        proof_bytes: out.proof_bytes,
+        instances: input.expected_instances,
+    })
+}
 
 /// Output of Circuit 2 proof generation.
 #[derive(Debug, Clone)]

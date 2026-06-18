@@ -5,8 +5,8 @@ use halo2_base::halo2_proofs::{
     dev::MockProver,
     halo2curves::bn256::{Bn256, Fr, G1Affine},
     plonk::{create_proof, Circuit, ProvingKey},
-    poly::kzg::{commitment::KZGCommitmentScheme, multiopen::ProverSHPLONK},
-    transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
+    poly::kzg::{commitment::{KZGCommitmentScheme, ParamsKZG}, multiopen::ProverSHPLONK},
+    transcript::{Blake2bWrite, Challenge255, EncodedChallenge, TranscriptWrite, TranscriptWriterBuffer},
 };
 use rand::rngs::OsRng;
 use tracing::{info, warn};
@@ -197,6 +197,49 @@ pub fn generate_fallback_proof(
         block_seq_no,
         last_seen_block_seqno,
     })
+}
+
+/// Drive Halo2 KZG/SHPLONK proving with a caller-supplied Fiat–Shamir
+/// transcript writer.
+///
+/// The lib's high-level Blake2b paths (`generate_primary_proof`,
+/// `generate_fallback_proof`, `generate_layer_proof`) hard-wire the Blake2b
+/// transcript via [`run_kzg_create_proof`]. This helper exposes the
+/// underlying `create_proof` call so consumers outside this crate (e.g. the
+/// gnark-wrapping pipeline in `bridge-prover-orchestrator`, which needs both
+/// Blake2b — for the AN-side `ZKHALO2VERIFYWITHVK` opcode — and a Poseidon
+/// transcript for snark-verifier consumption) can plug in their own
+/// transcript flavour without re-implementing the proving plumbing.
+pub fn create_proof_with_transcript<E, T, C>(
+    srs: &ParamsKZG<Bn256>,
+    pk: &ProvingKey<G1Affine>,
+    circuit: C,
+    instances: &[Fr],
+    transcript: &mut T,
+) -> anyhow::Result<()>
+where
+    E: EncodedChallenge<G1Affine>,
+    T: TranscriptWrite<G1Affine, E>,
+    C: Circuit<Fr>,
+{
+    let instance_refs: &[&[Fr]] = &[instances];
+    create_proof::<
+        KZGCommitmentScheme<Bn256>,
+        ProverSHPLONK<'_, Bn256>,
+        E,
+        _,
+        T,
+        _,
+    >(
+        srs,
+        pk,
+        &[circuit],
+        &[instance_refs],
+        OsRng,
+        transcript,
+    )
+    .context("create_proof_with_transcript: proof generation failed")?;
+    Ok(())
 }
 
 /// Shared KZG/SHPLONK/Blake2b proof core. The two attestation circuits

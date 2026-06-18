@@ -18,15 +18,50 @@ use halo2_base::halo2_proofs::{
     poly::{
         commitment::ParamsProver,
         kzg::{
-            commitment::KZGCommitmentScheme,
+            commitment::{KZGCommitmentScheme, ParamsKZG},
             multiopen::VerifierSHPLONK,
             strategy::SingleStrategy,
         },
     },
-    transcript::{Blake2bRead, Challenge255, TranscriptReadBuffer},
+    transcript::{Blake2bRead, Challenge255, EncodedChallenge, TranscriptRead, TranscriptReadBuffer},
 };
 
 use crate::keys::KeyManager;
+
+/// Drive Halo2 KZG/SHPLONK verification with a caller-supplied Fiat–Shamir
+/// transcript reader. Mirror of [`crate::prover::create_proof_with_transcript`]
+/// for the verify path — same motivation: lets downstream crates supply a
+/// non-Blake2b transcript (e.g. Poseidon for snark-verifier consumption) while
+/// still routing through this crate's shared verification stack
+/// (Bn256/KZG/SHPLONK + `SingleStrategy`).
+pub fn verify_proof_with_transcript<E, T>(
+    srs: &ParamsKZG<Bn256>,
+    vk: &VerifyingKey<G1Affine>,
+    instances: &[Fr],
+    transcript: &mut T,
+) -> bool
+where
+    E: EncodedChallenge<G1Affine>,
+    T: TranscriptRead<G1Affine, E>,
+{
+    let instance_refs: &[&[Fr]] = &[instances];
+    let verifier_params = srs.verifier_params();
+    let strategy = SingleStrategy::new(srs);
+    verify_proof::<
+        KZGCommitmentScheme<Bn256>,
+        VerifierSHPLONK<'_, Bn256>,
+        E,
+        T,
+        SingleStrategy<'_, Bn256>,
+    >(
+        verifier_params,
+        vk,
+        strategy,
+        &[instance_refs],
+        transcript,
+    )
+    .is_ok()
+}
 
 /// Shared verification core. All circuit-specific wrappers delegate here
 /// so the transcript / strategy / multiopen choices live in exactly one
